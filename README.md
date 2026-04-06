@@ -1,18 +1,103 @@
-# Solana Volume & Trading Bot 🤖🚀
+# Solana Volume & Trading Bot v3.2 🤖🚀
 
-An advanced, highly-modular Solana trading and volume generation bot controlled entirely via Telegram. 
-Built for stability, efficiency, and heavy concurrent workloads, this bot features 19 isolated trading strategies, advanced Jito MEV protection, an autonomous smart-sell background watcher, automated wallet pool lifecycle management, and a robust state-machine architecture that thrives in production.
+A production-ready, enterprise-grade Solana trading and volume generation bot with complete Telegram control interface. Engineered for stability, scalability, and high-frequency operations with 19 battle-tested trading strategies, advanced Jito MEV protection, intelligent wallet management, and comprehensive error handling.
+
+[![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x-green.svg)](https://nodejs.org/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Solana](https://img.shields.io/badge/Solana-Mainnet-purple.svg)](https://solana.com/)
+
+---
+
+## 📋 Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#-key-features)
+- [Prerequisites](#-prerequisites)
+- [Installation](#-installation)
+- [Configuration](#-configuration)
+- [Quick Start Guide](#-quick-start-guide)
+- [Wallet Management](#-wallet-management)
+- [Trading Strategies](#-trading-strategies)
+- [Advanced Features](#-advanced-features)
+- [Troubleshooting](#-troubleshooting)
+- [Best Practices](#-best-practices)
+- [FAQ](#-faq)
+- [Support](#-support)
+
+---
+
+## Overview
+
+This bot provides a complete solution for Solana token volume generation and trading operations. Built with production reliability in mind, it features:
+
+- **Zero-downtime configuration** via Telegram interface
+- **Atomic operations** with automatic rollback on failures
+- **Intelligent retry logic** with exponential backoff
+- **Multi-RPC failover** for maximum uptime
+- **Comprehensive logging** with Winston
+- **Graceful shutdown** with cleanup guarantees
+
+### Architecture
+
+```
+┌─────────────────┐
+│  Telegram Bot   │ ← User Interface
+└────────┬────────┘
+         │
+┌────────▼────────┐
+│  Volume Bot     │ ← Core Engine
+│  (volumebot.js) │
+└────────┬────────┘
+         │
+    ┌────┴────┬──────────┬──────────┐
+    │         │          │          │
+┌───▼───┐ ┌──▼──┐ ┌─────▼─────┐ ┌──▼───┐
+│Wallet │ │Batch│ │   Jito    │ │ RPC  │
+│Manager│ │Engine│ │  Bundle   │ │Failover│
+└───────┘ └─────┘ └───────────┘ └──────┘
+```
 
 ---
 
 ## 🌟 Key Features
 
-* **📱 Telegram UI Orchestration:** Control all parameters, strategies, wallet generation, and RPC networks dynamically from an intuitive inline-keyboard menu directly inside Telegram. No need to stop/start the node process.
-* **🔥 Ephemeral vs Persistent Wallets:** Run campaigns using the Persistent Wallet Pool (`wallets.json`) or toggle **Ephemeral Mode** to instantly spin up in-memory burner wallets that fund, trade, and drain back to your master wallet without leaving a trace.
-* **🛡️ Force-Dump Safety Engine:** Features an airtight shutdown sequence. If you hit the "Stop" button in Telegram during an active run, the bot legally bypasses sleep cycles and forces a full token liquidation and SOL sweep before terminating, ensuring zero funds are stranded.
-* **⚡ Jito MEV Integration:** Send batches of swaps safely using Jito validators to bypass the public mempool, execute wash trades atomically, and prevent sandwich attacks.
-* **🔧 Rent-Exempt Stabilization:** Automatically manages Solana rent floors. The bot now prevents account simulation failures by ensuring all sub-wallets maintain a safe rent-exemption buffer (0.0021 SOL) for Token Account creation.
-* **🤖 Smart Sell Module:** Set intelligent stop-losses or auto-sell thresholds running transparently in the background even when running other primary volume campaigns.
+### Core Capabilities
+
+* **📱 Complete Telegram Control**
+  - Intuitive inline keyboard interface
+  - Real-time configuration updates
+  - Live progress monitoring
+  - No server restarts required
+
+* **💼 Dual Wallet Modes**
+  - **Persistent Pool**: Reusable wallets saved to disk (10,000+ supported)
+  - **Ephemeral Mode**: Temporary in-memory wallets with automatic cleanup
+  - Smart buffer calculation (0.002 SOL for ephemeral, 0.01 SOL for persistent)
+
+* **🛡️ Production-Grade Reliability**
+  - Atomic file operations prevent data corruption
+  - Automatic backup and recovery
+  - Graceful shutdown with token liquidation
+  - Comprehensive error handling with detailed messages
+
+* **⚡ Performance Optimizations**
+  - Configurable batch concurrency (1-50 parallel operations)
+  - Multi-RPC endpoint rotation with automatic failover
+  - Intelligent retry logic skips non-retryable errors
+  - Memory-efficient wallet shuffling algorithms
+
+* **🔐 Security Features**
+  - Private keys never persisted to disk (except wallet pool)
+  - Admin-only access control
+  - Rate limiting on commands
+  - Secure session management
+
+* **🎯 Advanced Trading**
+  - 19 specialized trading strategies
+  - Jito MEV protection for atomic bundles
+  - Smart Sell with dev wallet integration
+  - Multiple DEX support (15+ DEXs)
+  - Dynamic slippage and fee calculation
 
 ## 🛠 Prerequisites
 
