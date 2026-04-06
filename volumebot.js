@@ -777,8 +777,8 @@ async function executeSpamMode(chatId, connection) {
             null,
             () => STATE.running && !isShuttingDown
         );
-        if (!STATE.useWalletPool) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
+    if (!STATE.useWalletPool && result?.wallets?.length) await walletManager.drainWallets(result.wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return result;
 }
 
@@ -813,8 +813,8 @@ async function executePumpDump(chatId, connection) {
                 }
             }
         }
-        if (!STATE.useWalletPool) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
+    if (!STATE.useWalletPool && result?.wallets?.length) await walletManager.drainWallets(result.wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return result;
 }
 
@@ -905,8 +905,8 @@ async function executeWhaleSimulation(chatId, connection) {
                 }
             }
         }
-        if (!STATE.useWalletPool) await walletManager.drainWallets(activeWhales, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
+    if (!STATE.useWalletPool && result?.wallets?.length) await walletManager.drainWallets(result.wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return result;
 }
 
@@ -1180,30 +1180,31 @@ async function executeBullTrap(chatId, connection) {
         await swap(SOL_ADDR, STATE.tokenAddress, trapWallet, connection, finalAmt, chatId, true);
         await sleep(getJitteredInterval(Math.floor(getRandomFloat(1000, 4000)), STATE.jitterPercentage));
     }
-    if (!STATE.running || isShuttingDown) return;
-
-    const waitTime = getJitteredInterval(Math.floor(getRandomFloat(5000, 12000)), STATE.jitterPercentage);
-    bot.sendMessage(chatId, `⏳ Waiting \`${Math.round(waitTime / 1000)}s\` for reaction...`, { parse_mode: 'Markdown' });
-    await sleep(waitTime);
-    if (!STATE.running || isShuttingDown) return;
-
-    const totalTokens = await getTokenBalance(connection, trapWallet.publicKey, STATE.tokenAddress);
-    if (totalTokens <= 0) {
-        bot.sendMessage(chatId, `⚠️ No tokens to dump. Aborted.`, { parse_mode: 'Markdown' });
-        return;
+    if (STATE.running && !isShuttingDown) {
+        const waitTime = getJitteredInterval(Math.floor(getRandomFloat(5000, 12000)), STATE.jitterPercentage);
+        bot.sendMessage(chatId, `⏳ Waiting \`${Math.round(waitTime / 1000)}s\` for reaction...`, { parse_mode: 'Markdown' });
+        await sleep(waitTime);
     }
-    const oldSlippage = STATE.slippage;
-    STATE.slippage = STATE.bullTrapSlippage || 20;
-    const chunks = Math.floor(getRandomFloat(2, 5)), chunkSize = totalTokens / chunks;
-    bot.sendMessage(chatId, `🔴 Dumping \`${totalTokens.toFixed(4)}\` tokens in ${chunks} chunks @ ${STATE.slippage}% slippage`, { parse_mode: 'Markdown' });
-    for (let c = 0; c < chunks && STATE.running && !isShuttingDown; c++) {
-        const amountToSell = (c === chunks - 1) ? 'auto' : chunkSize.toFixed(6);
-        await swap(STATE.tokenAddress, SOL_ADDR, trapWallet, connection, amountToSell, chatId, true);
-        if (c < chunks - 1) await sleep(getJitteredInterval(Math.floor(getRandomFloat(500, 2000)), STATE.jitterPercentage));
+    
+    if (STATE.running && !isShuttingDown) {
+        const totalTokens = await getTokenBalance(connection, trapWallet.publicKey, STATE.tokenAddress);
+        if (totalTokens <= 0) {
+            bot.sendMessage(chatId, `⚠️ No tokens to dump. Aborted.`, { parse_mode: 'Markdown' });
+        } else {
+            const oldSlippage = STATE.slippage;
+            STATE.slippage = STATE.bullTrapSlippage || 20;
+            const chunks = Math.floor(getRandomFloat(2, 5)), chunkSize = totalTokens / chunks;
+            bot.sendMessage(chatId, `🔴 Dumping \`${totalTokens.toFixed(4)}\` tokens in ${chunks} chunks @ ${STATE.slippage}% slippage`, { parse_mode: 'Markdown' });
+            for (let c = 0; c < chunks && STATE.running && !isShuttingDown; c++) {
+                const amountToSell = (c === chunks - 1) ? 'auto' : chunkSize.toFixed(6);
+                await swap(STATE.tokenAddress, SOL_ADDR, trapWallet, connection, amountToSell, chatId, true);
+                if (c < chunks - 1) await sleep(getJitteredInterval(Math.floor(getRandomFloat(500, 2000)), STATE.jitterPercentage));
+            }
+            STATE.slippage = oldSlippage;
+        }
     }
-    STATE.slippage = oldSlippage;
     if (!STATE.useWalletPool) await walletManager.drainWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
-    bot.sendMessage(chatId, `✅ Bull Trap complete: dumped in ${chunks} chunks.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ Bull Trap execution complete.`, { parse_mode: 'Markdown' });
     return { success: true };
 }
 
