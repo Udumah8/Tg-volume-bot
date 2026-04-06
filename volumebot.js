@@ -646,20 +646,25 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             { maxRetries: 2, minIntervalMs: 100, shuffle: true, perActionJitter: true, jitterMaxMs: 400 }
         );
 
-        if (!STATE.running || isShuttingDown) break;
-        await sleep(getPoissonDelay(STATE.intervalBetweenActions));
+        if (!STATE.running || isShuttingDown) {
+            bot.sendMessage(chatId, `⚠️ Stop detected. Forcing cycle token cleanup...`, { parse_mode: 'Markdown' });
+        } else {
+            await sleep(getPoissonDelay(STATE.intervalBetweenActions));
+        }
 
         await BatchSwapEngine.executeBatch(
             wallets,
             async (wallet, idx) => {
-                if (!STATE.running || isShuttingDown) return null;
+                // Removing checkRunning to force sell execution so tokens are not stranded
                 return await sellLogic(wallet, idx, volMult, connection, chatId);
             },
             STATE.batchConcurrency,
             null,
-            () => STATE.running && !isShuttingDown,
+            null, // No checkRunning bypass!
             { maxRetries: 2, minIntervalMs: 100, shuffle: true, perActionJitter: true, jitterMaxMs: 400 }
         );
+
+        if (!STATE.running || isShuttingDown) break;
     }
 
     if (isEphemeral && autoDrain) {
@@ -1137,8 +1142,13 @@ async function executeKolAlphaCall(chatId, connection) {
 
     const whaleWallet = fetchWallets(1)[0];
     const whaleAmt = parseFloat((getRandomFloat(STATE.maxBuyAmount * 2, STATE.maxBuyAmount * 5)).toFixed(4));
+    
+    if (!STATE.useWalletPool) {
+        await walletManager.fundWallets([whaleWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: whaleAmt + 0.02, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+    }
+
     bot.sendMessage(chatId, `🐋 Whale buy: \`${whaleAmt}\` SOL`, { parse_mode: 'Markdown' });
-    await swap(SOL_ADDR, STATE.tokenAddress, whaleWallet, connection, whaleAmt, chatId, true);
+    if (STATE.running && !isShuttingDown) await swap(SOL_ADDR, STATE.tokenAddress, whaleWallet, connection, whaleAmt, chatId, true);
     await sleep(2000);
 
     const swarmWallets = fetchWallets(swarmSize);
@@ -1160,7 +1170,10 @@ async function executeKolAlphaCall(chatId, connection) {
         () => STATE.running && !isShuttingDown
     );
 
-    if (!STATE.useWalletPool) await walletManager.drainWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) {
+        await walletManager.drainWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+        await walletManager.drainWallets([whaleWallet], { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    }
     bot.sendMessage(chatId, `✅ KOL Alpha Call complete!`, { parse_mode: 'Markdown' });
     return { success: true };
 }
@@ -1251,15 +1264,20 @@ async function executeSniperStrategy(chatId, connection) {
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
+        if (!STATE.running || isShuttingDown) return null;
         await sleep(Math.random() * STATE.sniperEntrySpeedMs);
         return await swap(SOL_ADDR, STATE.tokenAddress, wallet, connection, STATE.maxBuyAmount * 1.5, chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
-    await sleep(getRandomFloat(STATE.sniperHoldTimeMin * 1000, STATE.sniperHoldTimeMax * 1000));
+    if (STATE.running && !isShuttingDown) {
+        await sleep(getRandomFloat(STATE.sniperHoldTimeMin * 1000, STATE.sniperHoldTimeMax * 1000));
+    } else {
+        bot.sendMessage(chatId, `⚠️ Stop detected. Forcing sniper dump...`, { parse_mode: 'Markdown' });
+    }
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency); // Force dump
 
     if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
@@ -1300,14 +1318,20 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
+        if (!STATE.running || isShuttingDown) return null;
         const amount = getRandomFloat(STATE.mirrorBuyThresholdSOL * 0.8, STATE.mirrorBuyThresholdSOL * 1.5);
         return await swap(SOL_ADDR, STATE.tokenAddress, wallet, connection, amount, chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
-    await sleep(15000);
+    if (STATE.running && !isShuttingDown) {
+        await sleep(15000);
+    } else {
+        bot.sendMessage(chatId, `⚠️ Stop detected. Forcing mirror dump...`, { parse_mode: 'Markdown' });
+    }
+
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency); // Force dump
 
     if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
@@ -1322,16 +1346,21 @@ async function executeCurvePumpStrategy(chatId, connection) {
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet, idx) => {
+        if (!STATE.running || isShuttingDown) return null;
         const intensity = idx < 10 ? STATE.curveBuyIntensity : 1;
         const amount = STATE.maxBuyAmount * intensity;
         return await swap(SOL_ADDR, STATE.tokenAddress, wallet, connection, amount, chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
-    await sleep(8000);
+    if (STATE.running && !isShuttingDown) {
+        await sleep(8000);
+    } else {
+        bot.sendMessage(chatId, `⚠️ Stop detected. Forcing curve pump dump...`, { parse_mode: 'Markdown' });
+    }
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
-    }, STATE.batchConcurrency);
+    }, STATE.batchConcurrency); // Force dump
 
     if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
