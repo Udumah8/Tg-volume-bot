@@ -515,8 +515,8 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
 
             const isBuy = tokenIn === SOL_ADDR;
             if (isBuy && cleanAmount !== 'auto') {
-                // Buffer (0.0012 SOL) to ensure balance stays above rent-exemption (1,100,000 lamports)
-                const requiredSol = cleanAmount + (cleanAmount * STATE.slippage / 100) + STATE.priorityFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.0012;
+                // Buffer (0.0025 SOL) to ensure balance stays above rent-exemption (2,039,280 lamports for ATA)
+                const requiredSol = cleanAmount + (cleanAmount * STATE.slippage / 100) + STATE.priorityFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.0025;
                 const balance = await connection.getBalance(keypair.publicKey) / LAMPORTS_PER_SOL;
                 if (balance < requiredSol) throw new Error(`Insufficient SOL: ${balance.toFixed(6)} < ${requiredSol.toFixed(6)} needed (including rent safety)`);
             }

@@ -465,7 +465,7 @@ export class WalletPool {
             return { completed: 0, successes: 0, failures: 0 };
         }
 
-        const MIN_RENT = 1100000; // ~0.0011 SOL for rent-exemption + safety margin
+        const MIN_RENT = 1000000; // ~0.001 SOL (Base account rent floor for draining)
         const MIN_DRAIN = 100000; // ~0.0001 SOL minimum balance to justify draining fee
         const TX_FEE = 10000;    // Standard SOL transfer fee (with safety buffer)
 
@@ -499,7 +499,7 @@ export class WalletPool {
     async drainWallets(wallets, { connection, masterKeypair, sendSOLFn, concurrency = 10, progressCb = null, checkRunning = null }) {
         if (!wallets || !wallets.length) return { completed: 0, successes: 0, failures: 0 };
 
-        const MIN_RENT = 1100000; 
+        const MIN_RENT = 1000000; 
         const MIN_DRAIN = 100000;
         const TX_FEE = 10000;
 
@@ -548,7 +548,7 @@ export class WalletPool {
                     balances[i] = bal;
                     totalLamports += bal;
                     // A wallet is only considered "funded" if it can actually perform a trade (>= MIN_RENT)
-                    if (bal >= 1100000) funded++;
+                    if (bal >= 2100000) funded++;
                     else empty++;
                 } catch {
                     empty++;
