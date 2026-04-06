@@ -18,7 +18,8 @@ function mapMarket(targetDex) {
     if (!targetDex) return "RAYDIUM_AMM";
     const dex = targetDex.toUpperCase();
     if (dex.includes("PUMP_FUN") || dex.includes("PUMPFUN")) return "PUMP_FUN";
-    if (dex.includes("PUMP_SWAP")) return "PUMP_SWAP";
+    if (dex.includes("PUMP_SWAP") || dex.includes("PUMPSWAP")) return "PUMP_SWAP";
+    if (dex.includes("LAUNCHPAD")) return "RAYDIUM_LAUNCHPAD";
     if (dex.includes("CLMM") || dex.includes("RAYDIUM_CLMM")) return "RAYDIUM_CLMM";
     if (dex.includes("CPMM") || dex.includes("RAYDIUM_CPMM")) return "RAYDIUM_CPMM";
     if (dex.includes("RAYDIUM")) return "RAYDIUM_AMM";
@@ -152,11 +153,18 @@ let currentRpcIndex = 0;
 
 function getConnection() {
     const url = RPC_URLS[currentRpcIndex % RPC_URLS.length];
-    return new Connection(url, { commitment: 'confirmed', confirmTransactionInitialTimeout: 30000 });
+    return new Connection(url, { 
+        commitment: 'confirmed', 
+        confirmTransactionInitialTimeout: 60000,
+        disableRetryOnRateLimit: false,
+        httpHeaders: {
+            'Content-Type': 'application/json'
+        }
+    });
 }
 
 async function withRpcFallback(fn, maxRetries = null) {
-    const retries = maxRetries || RPC_URLS.length;
+    const retries = maxRetries || Math.max(RPC_URLS.length, 3);
     let lastError;
 
     for (let attempt = 0; attempt < retries; attempt++) {
@@ -165,13 +173,21 @@ async function withRpcFallback(fn, maxRetries = null) {
             return await fn(connection);
         } catch (err) {
             lastError = err;
-            logger.warn(`RPC ${RPC_URLS[currentRpcIndex % RPC_URLS.length]} failed (attempt ${attempt + 1}/${retries}): ${err.message}`);
-            currentRpcIndex++;
+            const is429 = err.message?.includes('429') || err.message?.includes('Too Many Requests');
+            
+            if (is429) {
+                logger.warn(`RPC rate limited (attempt ${attempt + 1}/${retries}). Switching endpoint...`);
+                currentRpcIndex++;
+            } else {
+                logger.warn(`RPC ${RPC_URLS[currentRpcIndex % RPC_URLS.length]} failed (attempt ${attempt + 1}/${retries}): ${err.message}`);
+                currentRpcIndex++;
+            }
 
             if (attempt < retries - 1) {
-                const baseDelay = 1000 * Math.pow(2, attempt);
-                const jitter = baseDelay * 0.1 * Math.random();
-                const delay = Math.min(baseDelay + jitter, 5000);
+                const baseDelay = is429 ? 2000 : 1000; // Longer delay for rate limits
+                const exponential = baseDelay * Math.pow(2, Math.min(attempt, 4));
+                const jitter = exponential * 0.2 * Math.random();
+                const delay = Math.min(exponential + jitter, 10000);
                 logger.info(`⏳ Retrying in ${Math.round(delay)}ms...`);
                 await sleep(delay);
             }
@@ -542,15 +558,30 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
             }
 
             const isBuy = tokenIn === SOL_ADDR;
-            if (isBuy && cleanAmount !== 'auto') {
-                // Buffer (0.004 SOL) to ensure balance stays above rent-exemption (2,039,280 lamports for ATA)
-                const requiredSol = cleanAmount + (cleanAmount * STATE.slippage / 100) + STATE.priorityFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.004;
-                const balance = await connection.getBalance(keypair.publicKey) / LAMPORTS_PER_SOL;
-                if (balance < requiredSol) throw new Error(`Insufficient SOL: ${balance.toFixed(6)} < ${requiredSol.toFixed(6)} needed (including rent safety)`);
-            }
-
+            
+            // Calculate dynamic values first
             const currentSlippage = getDynamicSlippage(STATE.slippage);
             const currentFee = getDynamicFee(STATE.priorityFee);
+            
+            if (isBuy && cleanAmount !== 'auto') {
+                // For BUYS: Calculate required SOL with proper buffer
+                // Base amount + slippage buffer + priority fee + jito tip (if enabled) + rent buffer (0.002 SOL)
+                const slippageBuffer = cleanAmount * (currentSlippage / 100);
+                const rentBuffer = 0.002; // Rent-exempt minimum for token account
+                const requiredSol = cleanAmount + slippageBuffer + currentFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + rentBuffer;
+                
+                const balance = await connection.getBalance(keypair.publicKey) / LAMPORTS_PER_SOL;
+                if (balance < requiredSol) {
+                    throw new Error(`Insufficient SOL: ${balance.toFixed(6)} < ${requiredSol.toFixed(6)} needed (buy: ${cleanAmount}, slippage: ${slippageBuffer.toFixed(6)}, fee: ${currentFee}, rent: ${rentBuffer})`);
+                }
+            } else if (!isBuy && cleanAmount !== 'auto') {
+                // For SELLS: Only need fee + small buffer (no rent needed, token account closes)
+                const minRequired = currentFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.0005; // Small buffer
+                const balance = await connection.getBalance(keypair.publicKey) / LAMPORTS_PER_SOL;
+                if (balance < minRequired) {
+                    throw new Error(`Insufficient SOL for sell: ${balance.toFixed(6)} < ${minRequired.toFixed(6)} needed (fee: ${currentFee})`);
+                }
+            }
 
             if (STATE.swapProvider === "SOLANA_TRADE" && SolanaTrade) {
                 const mappedMarket = mapMarket(STATE.targetDex);
@@ -590,12 +621,21 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
                 if (!silent && attempt === 0) bot.sendMessage(chatId, `⚡ SolanaTrade [${mappedMarket}] ${isBuy ? '🟢 Buy' : '🔴 Sell'}...`, { parse_mode: 'Markdown' }).catch(() => { });
                 
                 logger.debug(`[SolanaTrade] Executing ${isBuy ? 'buy' : 'sell'} on ${mappedMarket} with amount ${tradeAmount}`);
-                const sig = isBuy ? await trade.buy(params) : await trade.sell(params);
                 
-                if (!silent && sig && typeof sig === 'string') {
-                    bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => { });
+                try {
+                    const sig = isBuy ? await trade.buy(params) : await trade.sell(params);
+                    
+                    if (!silent && sig && typeof sig === 'string') {
+                        bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => { });
+                    }
+                    return sig;
+                } catch (tradeError) {
+                    // Add helpful context for pool not found errors
+                    if (tradeError.message?.toLowerCase().includes('pool not found')) {
+                        throw new Error(`${mappedMarket} pool not found for token. Try: PUMP_FUN, RAYDIUM_CPMM, or check token on Solscan/Birdeye for available DEXs`);
+                    }
+                    throw tradeError;
                 }
-                return sig;
             } else {
                 const solanaTracker = new SolanaTracker(keypair, RPC_URLS[0]);
                 const swapResponse = await solanaTracker.getSwapInstructions(tokenIn, tokenOut, cleanAmount, currentSlippage, keypair.publicKey.toBase58(), STATE.useJito ? 0 : currentFee, false);
@@ -625,10 +665,18 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
                 e.message?.includes('Invalid amount') ||
                 e.message?.includes('Simulation failed') ||
                 e.message?.includes('insufficient funds for rent') ||
-                e.message?.includes('Account not found');
+                e.message?.includes('insufficient lamports') ||
+                e.message?.includes('Account not found') ||
+                e.message?.includes('pool not found') ||
+                e.message?.includes('Pool not found');
 
             if (isNonRetryable) {
                 logger.debug(`[Swap] ${shortKey} non-retryable error, skipping remaining attempts`);
+                
+                // Provide helpful context for insufficient funds
+                if (e.message?.includes('Insufficient')) {
+                    logger.info(`💡 Tip: Fund wallet ${shortKey}... with more SOL or reduce minBuyAmount in config.json`);
+                }
                 break;
             }
 
@@ -835,13 +883,21 @@ async function executeWebOfActivity(chatId, connection) {
 // ⚡ Strategy: Spam Mode
 async function executeSpamMode(chatId, connection) {
     const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
+    
+    // Ensure wallets have enough SOL for both buying AND selling
+    // Each wallet needs: buy amount + rent (0.002) + sell fee (0.001) + buffer (0.001)
+    const minFundingNeeded = STATE.spamMicroBuyAmount + 0.004;
+    const fundAmount = Math.max(STATE.fundAmountPerWallet, minFundingNeeded);
+    
     const result = await executeStrategyTemplate(chatId, connection, {
-        name: 'Micro-Spam Mode', walletCount, fundAmount: STATE.fundAmountPerWallet,
+        name: 'Micro-Spam Mode', 
+        walletCount, 
+        fundAmount: fundAmount,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
             const jitteredSpam = parseFloat((STATE.spamMicroBuyAmount * (0.8 + Math.random() * 0.4)).toFixed(6));
             return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredSpam, cid, true);
         },
-        sellLogic: async () => null,
+        sellLogic: async () => null, // Don't sell during cycles
         cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool,
         autoDrain: false
@@ -850,12 +906,29 @@ async function executeSpamMode(chatId, connection) {
     if (result.success && STATE.running && !isShuttingDown) {
         bot.sendMessage(chatId, `📉 Dumping accumulated tokens...`, { parse_mode: 'Markdown' });
         const dumpWallets = result.wallets;
-        await BatchSwapEngine.executeBatch(
+        
+        // Add delay to let transactions settle
+        await sleep(2000);
+        
+        const dumpResult = await BatchSwapEngine.executeBatch(
             dumpWallets,
             async (w) => {
-                const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
-                if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true);
-                return null;
+                try {
+                    const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                    if (bal > 0.0001) {
+                        // Check if wallet has enough SOL for sell transaction
+                        const solBal = await connection.getBalance(w.publicKey) / LAMPORTS_PER_SOL;
+                        if (solBal < 0.001) {
+                            logger.warn(`[Spam] Wallet ${w.publicKey.toBase58().substring(0, 8)}... has insufficient SOL (${solBal.toFixed(6)}) for sell, skipping`);
+                            return null;
+                        }
+                        return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true);
+                    }
+                    return null;
+                } catch (e) {
+                    logger.error(`[Spam] Dump error for wallet: ${e.message}`);
+                    return null;
+                }
             },
             STATE.batchConcurrency,
             null,
@@ -976,17 +1049,33 @@ async function executeWhaleSimulation(chatId, connection) {
     if (result.success && STATE.running && !isShuttingDown) {
         const activeWhales = result.wallets;
         bot.sendMessage(chatId, `🔴 Whale dumping ${STATE.whaleSellPercent}% in stealth chunks...`, { parse_mode: 'Markdown' });
+        
+        // Add delay to let buy transactions settle
+        await sleep(2000);
+        
         for (const w of activeWhales) {
             if (!STATE.running || isShuttingDown) break;
-            const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
-            if (bal > 0) {
-                const dumpChunks = Math.floor(getRandomFloat(2, 5));
-                const chunkPercent = (STATE.whaleSellPercent / 100) / dumpChunks;
-                for (let c = 0; c < dumpChunks; c++) {
-                    const dumpAmt = parseFloat((bal * chunkPercent).toFixed(6));
-                    await swap(STATE.tokenAddress, SOL_ADDR, w, connection, dumpAmt, chatId, true);
-                    await sleep(getJitteredInterval(800, 15));
+            
+            try {
+                // Check if wallet has enough SOL for sell
+                const solBal = await connection.getBalance(w.publicKey) / LAMPORTS_PER_SOL;
+                if (solBal < 0.001) {
+                    logger.warn(`[Whale] Wallet ${w.publicKey.toBase58().substring(0, 8)}... has insufficient SOL (${solBal.toFixed(6)}) for sell, skipping`);
+                    continue;
                 }
+                
+                const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                if (bal > 0.0001) {
+                    const dumpChunks = Math.floor(getRandomFloat(2, 5));
+                    const chunkPercent = (STATE.whaleSellPercent / 100) / dumpChunks;
+                    for (let c = 0; c < dumpChunks; c++) {
+                        const dumpAmt = parseFloat((bal * chunkPercent).toFixed(6));
+                        await swap(STATE.tokenAddress, SOL_ADDR, w, connection, dumpAmt, chatId, true);
+                        await sleep(getJitteredInterval(800, 15));
+                    }
+                }
+            } catch (e) {
+                logger.error(`[Whale] Dump error for wallet: ${e.message}`);
             }
         }
     }
