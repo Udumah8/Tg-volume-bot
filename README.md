@@ -11,6 +11,7 @@ Built for stability, efficiency, and heavy concurrent workloads, this bot featur
 * **🔥 Ephemeral vs Persistent Wallets:** Run campaigns using the Persistent Wallet Pool (`wallets.json`) or toggle **Ephemeral Mode** to instantly spin up in-memory burner wallets that fund, trade, and drain back to your master wallet without leaving a trace.
 * **🛡️ Force-Dump Safety Engine:** Features an airtight shutdown sequence. If you hit the "Stop" button in Telegram during an active run, the bot legally bypasses sleep cycles and forces a full token liquidation and SOL sweep before terminating, ensuring zero funds are stranded.
 * **⚡ Jito MEV Integration:** Send batches of swaps safely using Jito validators to bypass the public mempool, execute wash trades atomically, and prevent sandwich attacks.
+* **🔧 Rent-Exempt Stabilization:** Automatically manages Solana rent floors. The bot now prevents account simulation failures by ensuring all sub-wallets maintain a safe rent-exemption buffer (0.0021 SOL) for Token Account creation.
 * **🤖 Smart Sell Module:** Set intelligent stop-losses or auto-sell thresholds running transparently in the background even when running other primary volume campaigns.
 
 ## 🛠 Prerequisites
@@ -93,13 +94,13 @@ The bot provides numerous highly-specialized routines across 5 core algorithmic 
 ### 1. Generating & Managing Wallets
 Choose your wallet style in Telegram:
 * **Pool Mode:** Generates a set of secure Keypairs and securely saves them locally into your backend (`wallets.json`). Great for campaigns you want to track or reuse.
-* **Ephemeral Mode (Burners):** Turn Pool Mode **OFF**. The bot bypasses the hard drive entirely, spinning up sterile burner keypairs in RAM. Once the cycle finishes, the funds are swept and the wallets are securely garbage collected.
+* **Ephemeral Mode (Burners):** Turn Pool Mode **OFF**. The bot bypasses the hard drive entirely, spinning up sterile burner keypairs in RAM. Once the cycle finishes, the funds are swept and the wallets are securely garbage collected. Now hardened for multi-cycle strategies with intelligent funding multipliers.
 
 ### 2. Funding Pipeline
-When executing a standard strategy, the bot will automatically detect empty wallets and securely bridge exactly `STATE.fundAmountPerWallet` from your Master `.env` Wallet directly to the subset of wallets needed. Supports **Direct** or **Stealth/Multi-hop** mode to obfuscate traces.
+When executing a standard strategy, the bot will automatically detect empty wallets and securely bridge a safe amount (default **0.005 SOL**) from your Master wallet. This covers the Solana rent-exemption fee for and Associated Token Account (ATA), transaction fees, and the trade amount itself.
 
 ### 3. Draining safely
-Wallets can be forcibly reclaimed at any time via `🔄 Drain Pool`. The bot sweeps tokens mathematically to SOL, accounts for network/Jito fees, and funnels every unspent drop directly back to the MASTER wallet.
+Wallets can be forcibly reclaimed at any time via `🔄 Drain Pool`. The bot performs a **Deep Sweep**, Hit exactly **0.0000 SOL** by accounting for the exact 5,000 lamport Solana transfer fee, ensuring no "dust" is left trapped in sub-wallets.
 
 ## 🛟 Safety & Precautions
 
