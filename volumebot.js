@@ -17,9 +17,37 @@ import winston from 'winston';
 let SolanaTrade;
 try {
     const stModule = await import("solana-trade");
-    SolanaTrade = stModule.SolanaTrade;
+    // Handle both ESM and CJS exports robustly
+    SolanaTrade = stModule.SolanaTrade || stModule.default?.SolanaTrade || stModule.default;
+    if (SolanaTrade) {
+        logger?.info("✅ SolanaTrade provider initialized successfully");
+    } else {
+        throw new Error("SolanaTrade class not found in module exports");
+    }
 } catch (e) {
-    console.warn("⚠️ SolanaTrade provider not available. Using SolanaTracker as fallback.");
+    // Only warn during initialization; users might not have it installed or might not care unless they select it
+    logger?.warn(`⚠️ SolanaTrade provider failed to load: ${e.message}. Using SolanaTracker as fallback.`);
+}
+
+// Helper to map UI DEX names to SolanaTrade market identifiers
+function mapMarket(targetDex) {
+    if (!targetDex) return "RAYDIUM_AMM";
+    const dex = targetDex.toUpperCase();
+    if (dex.includes("PUMP_FUN") || dex.includes("PUMPFUN")) return "PUMP_FUN";
+    if (dex.includes("PUMP_SWAP")) return "PUMP_SWAP";
+    if (dex.includes("CLMM") || dex.includes("RAYDIUM_CLMM")) return "RAYDIUM_CLMM";
+    if (dex.includes("CPMM") || dex.includes("RAYDIUM_CPMM")) return "RAYDIUM_CPMM";
+    if (dex.includes("RAYDIUM")) return "RAYDIUM_AMM";
+    if (dex.includes("DLMM")) return "METEORA_DLMM";
+    if (dex.includes("DAMM_V1")) return "METEORA_DAMM_V1";
+    if (dex.includes("DAMM_V2")) return "METEORA_DAMM_V2";
+    if (dex.includes("METEORA_DBC") || dex.includes("BONDING_CURVE")) return "METEORA_DBC";
+    if (dex.includes("ORCA")) return "ORCA_WHIRLPOOL";
+    if (dex.includes("MOONIT")) return "MOONIT";
+    if (dex.includes("HEAVEN")) return "HEAVEN";
+    if (dex.includes("SUGAR")) return "SUGAR";
+    if (dex.includes("BOOP")) return "BOOP_FUN";
+    return targetDex; // Fallback to provided name
 }
 
 // Import our modular components
@@ -525,17 +553,48 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
             const currentFee = getDynamicFee(STATE.priorityFee);
 
             if (STATE.swapProvider === "SOLANA_TRADE" && SolanaTrade) {
+                const mappedMarket = mapMarket(STATE.targetDex);
                 const trade = new SolanaTrade(RPC_URLS[0]);
+                
+                // For SELLS, solana-trade expects the actual token amount as a number
+                let tradeAmount = cleanAmount;
+                if (!isBuy) {
+                    if (cleanAmount === 'auto') {
+                        tradeAmount = await getTokenBalance(connection, keypair.publicKey, tokenIn);
+                    } else {
+                        tradeAmount = parseFloat(cleanAmount);
+                    }
+                    if (tradeAmount <= 0) {
+                        logger.warn(`[Swap] ${shortKey} skipping sell: Zero balance detected`);
+                        return null;
+                    }
+                } else if (cleanAmount === 'auto') {
+                    // Buy 'auto' fallback (should not happen in current strategies)
+                    tradeAmount = STATE.minBuyAmount;
+                }
+
                 const params = {
-                    market: STATE.targetDex, wallet: keypair, mint: isBuy ? tokenOut : tokenIn,
-                    amount: cleanAmount === 'auto' ? (await getTokenBalance(connection, keypair.publicKey, isBuy ? tokenOut : tokenIn)) : cleanAmount,
-                    slippage: currentSlippage, priorityFeeSol: STATE.useJito ? 0 : currentFee,
+                    market: mappedMarket,
+                    wallet: keypair,
+                    mint: isBuy ? tokenOut : tokenIn,
+                    amount: tradeAmount,
+                    slippage: currentSlippage,
+                    priorityFeeSol: currentFee, // solana-trade handles base fee
                     tipAmountSol: STATE.useJito ? STATE.jitoTipAmount : 0,
-                    sender: STATE.useJito ? 'JITO' : undefined, skipConfirmation: STATE.useJito, send: true
+                    sender: STATE.useJito ? 'JITO' : undefined,
+                    skipConfirmation: STATE.useJito,
+                    send: true,
+                    skipSimulation: false
                 };
-                if (!silent && attempt === 0) bot.sendMessage(chatId, `⚡ ${STATE.targetDex} ${isBuy ? '🟢 Buy' : '🔴 Sell'}...`, { parse_mode: 'Markdown' }).catch(() => { });
+
+                if (!silent && attempt === 0) bot.sendMessage(chatId, `⚡ SolanaTrade [${mappedMarket}] ${isBuy ? '🟢 Buy' : '🔴 Sell'}...`, { parse_mode: 'Markdown' }).catch(() => { });
+                
+                logger.debug(`[SolanaTrade] Executing ${isBuy ? 'buy' : 'sell'} on ${mappedMarket} with amount ${tradeAmount}`);
                 const sig = isBuy ? await trade.buy(params) : await trade.sell(params);
-                if (!silent && sig) bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => { });
+                
+                if (!silent && sig && typeof sig === 'string') {
+                    bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => { });
+                }
                 return sig;
             } else {
                 const solanaTracker = new SolanaTracker(keypair, RPC_URLS[0]);
