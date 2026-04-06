@@ -167,6 +167,21 @@ export class WalletPool {
         return generated;
     }
 
+    /**
+     * Generate temporary ephemeral wallets that are NOT persisted to the pool.
+     * Use this when you do not want to use or pollute the saved wallets.json.
+     * 
+     * @param {number} count - Number of ephemeral wallets to generate
+     * @returns {Keypair[]} Array of newly generated Keypairs
+     */
+    generateEphemeralWallets(count) {
+        const tempWallets = [];
+        for (let i = 0; i < count; i++) {
+            tempWallets.push(Keypair.generate());
+        }
+        return tempWallets;
+    }
+
     // ─── Batch Operations ──────────────────────────
 
     /**
@@ -354,6 +369,69 @@ export class WalletPool {
                 skipped,
                 phase: 'funding'
             });
+        }
+
+        const result = await this._batchExecute(
+            walletsToFund,
+            async (wallet) => {
+                await sendSOLFn(connection, masterKeypair, wallet.publicKey, amountSOL);
+            },
+            concurrency,
+            progressCb,
+            checkRunning
+        );
+
+        return { ...result, skipped };
+    }
+
+    /**
+     * Fund a specific array of wallets from a master keypair.
+     * 
+     * @param {Keypair[]} wallets - Array of wallets to fund
+     * @param {Object} options - Funding options
+     * @returns {Promise<{completed, successes, failures, skipped}>}
+     */
+    async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null }) {
+        if (!wallets || !wallets.length) {
+            console.warn('[WalletPool] fundWallets called with empty array');
+            return { completed: 0, successes: 0, failures: 0, skipped: 0 };
+        }
+
+        console.log(`[WalletPool] Scanning ${wallets.length} specific wallets for funding needs...`);
+        const walletsToFund = [];
+        
+        // Scan balances first to avoid unnecessary funding
+        let skipped = 0;
+        await this._batchExecute(
+            wallets,
+            async (wallet) => {
+                try {
+                    const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
+                    const threshold = amountSOL * LAMPORTS_PER_SOL * 0.9;
+                    if (bal < threshold) {
+                        walletsToFund.push(wallet);
+                    } else {
+                        skipped++;
+                    }
+                } catch {
+                    // On error assume needs funding
+                    walletsToFund.push(wallet);
+                }
+            },
+            concurrency * 2, // run scanning fast
+            null,
+            null
+        );
+
+        console.log(`[WalletPool] Specific funding: ${walletsToFund.length} need funds, skipping ${skipped}`);
+
+        if (walletsToFund.length === 0) {
+            if (progressCb) progressCb({ completed: 0, total: 0, successes: 0, failures: 0, skipped });
+            return { completed: 0, successes: 0, failures: 0, skipped };
+        }
+
+        if (progressCb) {
+            progressCb({ completed: 0, total: walletsToFund.length, successes: 0, failures: 0, skipped, phase: 'funding' });
         }
 
         const result = await this._batchExecute(

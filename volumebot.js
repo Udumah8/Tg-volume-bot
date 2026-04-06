@@ -47,7 +47,7 @@ process.on('uncaughtException', async (err) => {
 process.on('unhandledRejection', async (reason) => {
     const msg = reason?.message || String(reason);
     // Don't crash the bot for non-fatal Telegram errors
-    const isNonFatal = 
+    const isNonFatal =
         msg.includes('query is too old') ||
         msg.includes('ETELEGRAM') ||
         msg.includes('message is not modified') ||
@@ -56,7 +56,7 @@ process.on('unhandledRejection', async (reason) => {
         msg.includes('ECONNRESET') ||
         msg.includes('ENOTFOUND') ||
         msg.includes('fetch failed');
-    
+
     if (isNonFatal) {
         logger?.warn(`Non-fatal Unhandled Rejection (suppressed): ${msg}`);
         return; // Do NOT shutdown
@@ -70,27 +70,27 @@ async function handleShutdown(signal) {
     isShuttingDown = true;
     logger?.info(`🛑 Shutdown signal received: ${signal}`);
     STATE.running = false;
-    
+
     if (activeStrategy) {
         logger?.info(`🔄 Cancelling active strategy: ${activeStrategy}`);
         if (bot && ADMIN_CHAT_ID) {
-            bot.sendMessage(ADMIN_CHAT_ID, `⚠️ Strategy ${activeStrategy} cancelled due to shutdown`, { parse_mode: 'Markdown' }).catch(() => {});
+            bot.sendMessage(ADMIN_CHAT_ID, `⚠️ Strategy ${activeStrategy} cancelled due to shutdown`, { parse_mode: 'Markdown' }).catch(() => { });
         }
     }
-    
+
     if (smartSellInterval) {
         clearInterval(smartSellInterval);
         smartSellInterval = null;
     }
-    
+
     saveConfig();
     await sleep(5000);
-    
+
     if (globalWalletManager?._save) {
         globalWalletManager._save();
         logger?.info('💾 Wallets saved to disk before shutdown');
     }
-    
+
     logger?.info('✅ Graceful shutdown complete');
     await logger?.end();
     process.exit(0);
@@ -104,7 +104,7 @@ const logger = winston.createLogger({
     format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
-        winston.format.printf(({ timestamp, level, message, stack }) => 
+        winston.format.printf(({ timestamp, level, message, stack }) =>
             `${timestamp} [${level.toUpperCase()}]: ${message}${stack ? '\n' + stack : ''}`)
     ),
     transports: [
@@ -116,8 +116,8 @@ const logger = winston.createLogger({
 // ─────────────────────────────────────────────
 // 🌐 RPC Fallback with Exponential Backoff
 // ─────────────────────────────────────────────
-const RPC_URLS = process.env.RPC_URLS 
-    ? process.env.RPC_URLS.split(',').map(url => url.trim()) 
+const RPC_URLS = process.env.RPC_URLS
+    ? process.env.RPC_URLS.split(',').map(url => url.trim())
     : [process.env.RPC_URL || "https://api.mainnet-beta.solana.com"];
 
 let currentRpcIndex = 0;
@@ -130,7 +130,7 @@ function getConnection() {
 async function withRpcFallback(fn, maxRetries = null) {
     const retries = maxRetries || RPC_URLS.length;
     let lastError;
-    
+
     for (let attempt = 0; attempt < retries; attempt++) {
         try {
             const connection = getConnection();
@@ -139,7 +139,7 @@ async function withRpcFallback(fn, maxRetries = null) {
             lastError = err;
             logger.warn(`RPC ${RPC_URLS[currentRpcIndex % RPC_URLS.length]} failed (attempt ${attempt + 1}/${retries}): ${err.message}`);
             currentRpcIndex++;
-            
+
             if (attempt < retries - 1) {
                 const baseDelay = 1000 * Math.pow(2, attempt);
                 const jitter = baseDelay * 0.1 * Math.random();
@@ -216,7 +216,7 @@ if (process.env.PRIVKEY) {
             masterKeypair = Keypair.fromSecretKey(bs58.decode(process.env.PRIVKEY.trim()));
         }
         const pubKey = masterKeypair.publicKey.toBase58();
-        logger.info(`✅ Master Wallet loaded: ${pubKey.substring(0,8)}...${pubKey.substring(pubKey.length-4)}`);
+        logger.info(`✅ Master Wallet loaded: ${pubKey.substring(0, 8)}...${pubKey.substring(pubKey.length - 4)}`);
     } catch (e) {
         logger.error(`❌ Failed to load master wallet: ${e.message}`);
     }
@@ -262,7 +262,7 @@ setInterval(() => {
 bot.on('message', (msg) => {
     if (isShuttingDown) return;
     const chatId = msg.chat.id.toString();
-    
+
     if (msg.text && /id|whoami/i.test(msg.text)) {
         logger.info(`🔍 User ID check: Chat ${chatId} (@${msg.from?.username || 'unknown'})`);
         bot.sendMessage(chatId, `📋 Your Chat ID: \`${chatId}\``, { parse_mode: 'Markdown' });
@@ -271,7 +271,7 @@ bot.on('message', (msg) => {
 
     const session = userSessions.get(chatId);
     if (!session) return;
-    
+
     if (msg.text && msg.text.startsWith('/')) {
         clearSession(chatId);
         return;
@@ -280,7 +280,7 @@ bot.on('message', (msg) => {
 
     clearTimeout(session.timeout);
     userSessions.delete(chatId);
-    
+
     try {
         session.callback(msg.text.trim());
     } catch (e) {
@@ -295,11 +295,11 @@ bot.on('message', (msg) => {
 const PERSONALITIES = {
     DIAMOND: { buyProb: 0.8, sellProb: 0.1, minHold: 5, maxHold: 15, sizeMult: 0.8, minThink: 2000, maxThink: 8000 },
     SCALPER: { buyProb: 0.9, sellProb: 0.8, minHold: 1, maxHold: 3, sizeMult: 1.2, minThink: 500, maxThink: 2500 },
-    RETAIL:  { buyProb: 0.5, sellProb: 0.4, minHold: 2, maxHold: 6, sizeMult: 0.5, minThink: 1000, maxThink: 6000 },
-    WHALE:   { buyProb: 0.3, sellProb: 0.05, minHold: 10, maxHold: 30, sizeMult: 3.0, minThink: 3000, maxThink: 20000 },
-    LADDER:  { buyProb: 0.95, sellProb: 0.6, minHold: 8, maxHold: 25, sizeMult: 1.6, minThink: 800, maxThink: 4500 },
-    SNIPER:  { buyProb: 1.0,  sellProb: 0.9, minHold: 1, maxHold: 3,  sizeMult: 2.5, minThink: 300, maxThink: 1200 },
-    WASH:    { buyProb: 1.0,  sellProb: 1.0, minHold: 1, maxHold: 2,  sizeMult: 1.0, minThink: 200, maxThink: 800 }
+    RETAIL: { buyProb: 0.5, sellProb: 0.4, minHold: 2, maxHold: 6, sizeMult: 0.5, minThink: 1000, maxThink: 6000 },
+    WHALE: { buyProb: 0.3, sellProb: 0.05, minHold: 10, maxHold: 30, sizeMult: 3.0, minThink: 3000, maxThink: 20000 },
+    LADDER: { buyProb: 0.95, sellProb: 0.6, minHold: 8, maxHold: 25, sizeMult: 1.6, minThink: 800, maxThink: 4500 },
+    SNIPER: { buyProb: 1.0, sellProb: 0.9, minHold: 1, maxHold: 3, sizeMult: 2.5, minThink: 300, maxThink: 1200 },
+    WASH: { buyProb: 1.0, sellProb: 1.0, minHold: 1, maxHold: 2, sizeMult: 1.0, minThink: 200, maxThink: 800 }
 };
 
 const STATE = {
@@ -448,7 +448,7 @@ async function sendSOL(connection, from, to, amountSOL) {
     const roundedAmount = parseFloat(amountSOL.toFixed(6)); // Fix floating-point precision
     const lamportsNeeded = Math.floor(roundedAmount * LAMPORTS_PER_SOL) + 10000;
     if (balance < lamportsNeeded) {
-        throw new Error(`Insufficient balance: ${(balance/LAMPORTS_PER_SOL).toFixed(6)} SOL < ${(roundedAmount + 0.00001).toFixed(6)} SOL needed`);
+        throw new Error(`Insufficient balance: ${(balance / LAMPORTS_PER_SOL).toFixed(6)} SOL < ${(roundedAmount + 0.00001).toFixed(6)} SOL needed`);
     }
 
     const tx = new Transaction().add(
@@ -531,9 +531,9 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
                     tipAmountSol: STATE.useJito ? STATE.jitoTipAmount : 0,
                     sender: STATE.useJito ? 'JITO' : undefined, skipConfirmation: STATE.useJito, send: true
                 };
-                if (!silent && attempt === 0) bot.sendMessage(chatId, `⚡ ${STATE.targetDex} ${isBuy ? '🟢 Buy' : '🔴 Sell'}...`, { parse_mode: 'Markdown' }).catch(() => {});
+                if (!silent && attempt === 0) bot.sendMessage(chatId, `⚡ ${STATE.targetDex} ${isBuy ? '🟢 Buy' : '🔴 Sell'}...`, { parse_mode: 'Markdown' }).catch(() => { });
                 const sig = isBuy ? await trade.buy(params) : await trade.sell(params);
-                if (!silent && sig) bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => {});
+                if (!silent && sig) bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${sig})`, { parse_mode: 'Markdown' }).catch(() => { });
                 return sig;
             } else {
                 const solanaTracker = new SolanaTracker(keypair, RPC_URLS[0]);
@@ -550,53 +550,75 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
                 } else {
                     txid = await solanaTracker.performSwap(swapResponse, { sendOptions: { skipPreflight: false, preflightCommitment: 'confirmed' }, commitment: "confirmed" });
                 }
-                if (!silent && txid) bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${txid})`, { parse_mode: 'Markdown' }).catch(() => {});
+                if (!silent && txid) bot.sendMessage(chatId, `✅ [Tx](https://solscan.io/tx/${txid})`, { parse_mode: 'Markdown' }).catch(() => { });
                 return txid;
             }
         } catch (e) {
             lastError = e;
             logger.warn(`[Swap] ${shortKey} attempt ${attempt + 1}/${maxRetries}: ${e.message}`);
-            
+
             // Don't retry non-retryable errors (saves time and RPC calls)
-            const isNonRetryable = 
+            const isNonRetryable =
                 e.message?.includes('Insufficient SOL') ||
                 e.message?.includes('Insufficient balance') ||
                 e.message?.includes('Invalid amount') ||
                 e.message?.includes('Invalid token address') ||
                 e.message?.includes('Account not found');
-            
+
             if (isNonRetryable) {
                 logger.debug(`[Swap] ${shortKey} non-retryable error, skipping remaining attempts`);
                 break;
             }
-            
+
             if (attempt < maxRetries - 1) await sleep(Math.min(1000 * Math.pow(2, attempt), 3000));
         }
     }
     logger.error(`[Swap] ${shortKey} failed after ${maxRetries} attempts: ${lastError?.message || "Unknown"}`);
-    if (!silent && chatId) bot.sendMessage(chatId, `⚠️ Swap failed [${shortKey}...]: ${lastError?.message || "Unknown error"}`).catch(() => {});
+    if (!silent && chatId) bot.sendMessage(chatId, `⚠️ Swap failed [${shortKey}...]: ${lastError?.message || "Unknown error"}`).catch(() => { });
     return null;
+}
+
+// ─────────────────────────────────────────────
+// 💼 Wallet Helper
+// ─────────────────────────────────────────────
+function fetchWallets(count) {
+    if (STATE.useWalletPool) {
+        return walletManager.getWallets(count);
+    } else {
+        return walletManager.generateEphemeralWallets(count);
+    }
 }
 
 // ─────────────────────────────────────────────
 // 🔄 Universal Strategy Executor Template
 // ─────────────────────────────────────────────
 async function executeStrategyTemplate(chatId, connection, strategyConfig) {
-    const { name, walletCount, fundAmount, buyLogic, sellLogic, cycles, needsFunding = true } = strategyConfig;
-    
+    const { name, walletCount, fundAmount, buyLogic, sellLogic, cycles, needsFunding = true, autoDrain = true } = strategyConfig;
+
     bot.sendMessage(chatId, `🚀 Starting *${name}...*`, { parse_mode: 'Markdown' });
     globalWalletManager = walletManager;
-    
-    const wallets = walletManager.getWallets(walletCount);
-    const isEphemeral = walletManager.isEphemeral();
+
+    const wallets = fetchWallets(walletCount);
+    const isEphemeral = !STATE.useWalletPool;
 
     if (needsFunding && fundAmount > 0) {
         bot.sendMessage(chatId, `💰 Funding ${wallets.length} wallets...`, { parse_mode: 'Markdown' });
-        const fundResult = await walletManager.fundAll(
-            connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
-            (prog) => bot.sendMessage(chatId, `💰 Progress: ${prog.successes}/${prog.total}`, { parse_mode: 'Markdown' }).catch(() => {}),
-            () => STATE.running && !isShuttingDown
-        );
+
+        let fundResult;
+        if (isEphemeral) {
+            fundResult = await walletManager.fundWallets(wallets, {
+                connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: fundAmount, concurrency: STATE.batchConcurrency,
+                progressCb: (prog) => bot.sendMessage(chatId, `💰 Progress: ${prog.successes}/${prog.total}`, { parse_mode: 'Markdown' }).catch(() => { }),
+                checkRunning: () => STATE.running && !isShuttingDown
+            });
+        } else {
+            fundResult = await walletManager.fundAll(
+                connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
+                (prog) => bot.sendMessage(chatId, `💰 Progress: ${prog.successes}/${prog.total}`, { parse_mode: 'Markdown' }).catch(() => { }),
+                () => STATE.running && !isShuttingDown
+            );
+        }
+
         if (fundResult.failures > 0) bot.sendMessage(chatId, `⚠️ ${fundResult.failures} funding failures`, { parse_mode: 'Markdown' });
         await sleep(3000);
     }
@@ -606,20 +628,20 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
         const cycleMsg = await bot.sendMessage(chatId, `🔄 ${name} Cycle ${cycle + 1}/${cycles} | Vol: ${volMult.toFixed(2)}x`, { parse_mode: 'Markdown' });
 
         await BatchSwapEngine.executeBatch(
-            wallets, 
-            async (wallet, idx) => { 
-                if (!STATE.running || isShuttingDown) return null; 
-                return await buyLogic(wallet, idx, volMult, connection, chatId); 
-            }, 
-            STATE.batchConcurrency, 
-            (progress) => { 
+            wallets,
+            async (wallet, idx) => {
+                if (!STATE.running || isShuttingDown) return null;
+                return await buyLogic(wallet, idx, volMult, connection, chatId);
+            },
+            STATE.batchConcurrency,
+            (progress) => {
                 if (progress.completed % Math.max(1, Math.floor(progress.total / 5)) === 0) {
                     bot.editMessageText(
-                        `🔄 ${name} Cycle ${cycle + 1}/${cycles}\n🛒 Buying: ${progress.completed}/${progress.total} | ✅ ${progress.successes} | ❌ ${progress.failures}`, 
+                        `🔄 ${name} Cycle ${cycle + 1}/${cycles}\n🛒 Buying: ${progress.completed}/${progress.total} | ✅ ${progress.successes} | ❌ ${progress.failures}`,
                         { chat_id: chatId, message_id: cycleMsg?.message_id, parse_mode: "Markdown" }
-                    ).catch(() => {});
+                    ).catch(() => { });
                 }
-            }, 
+            },
             () => STATE.running && !isShuttingDown,
             { maxRetries: 2, minIntervalMs: 100, shuffle: true, perActionJitter: true, jitterMaxMs: 400 }
         );
@@ -628,19 +650,23 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
         await sleep(getPoissonDelay(STATE.intervalBetweenActions));
 
         await BatchSwapEngine.executeBatch(
-            wallets, 
-            async (wallet, idx) => { 
-                if (!STATE.running || isShuttingDown) return null; 
-                return await sellLogic(wallet, idx, volMult, connection, chatId); 
-            }, 
-            STATE.batchConcurrency, 
-            null, 
+            wallets,
+            async (wallet, idx) => {
+                if (!STATE.running || isShuttingDown) return null;
+                return await sellLogic(wallet, idx, volMult, connection, chatId);
+            },
+            STATE.batchConcurrency,
+            null,
             () => STATE.running && !isShuttingDown,
             { maxRetries: 2, minIntervalMs: 100, shuffle: true, perActionJitter: true, jitterMaxMs: 400 }
         );
     }
 
-    return { success: true };
+    if (isEphemeral && autoDrain) {
+        await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    }
+
+    return { success: true, wallets };
 }
 
 // ─────────────────────────────────────────────
@@ -649,18 +675,18 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
 async function executeStandardCycles(chatId, connection) {
     return executeStrategyTemplate(chatId, connection, {
         name: 'Standard Mode',
-        walletCount: STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 1,
+        walletCount: STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle,
         fundAmount: STATE.fundAmountPerWallet,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const amount = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult).toFixed(4)); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amount, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const amount = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult).toFixed(4));
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amount, cid, true);
         },
-        sellLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress); 
-            if (bal > 0.0001) return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true); 
-            return null; 
+        sellLogic: async (wallet, idx, volMult, conn, cid) => {
+            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
+            if (bal > 0.0001) return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true);
+            return null;
         },
-        cycles: STATE.numberOfCycles, 
+        cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
@@ -672,139 +698,141 @@ async function executeMakerCycles(chatId, connection) {
         name: 'Maker Mode', walletCount,
         fundAmount: parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4)) + 0.01,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
-            if (!wallet.personality) { 
-                const pKey = STATE.personalityMix[Math.floor(Math.random() * STATE.personalityMix.length)]; 
-                wallet.personality = PERSONALITIES[pKey] || PERSONALITIES.RETAIL; 
-                wallet.holdCycles = 0; 
+            if (!wallet.personality) {
+                const pKey = STATE.personalityMix[Math.floor(Math.random() * STATE.personalityMix.length)];
+                wallet.personality = PERSONALITIES[pKey] || PERSONALITIES.RETAIL;
+                wallet.holdCycles = 0;
             }
-            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress); 
+            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
             if (bal > 0) return null;
             if (Math.random() < wallet.personality.buyProb) {
                 await sleep(getRandomFloat(wallet.personality.minThink, wallet.personality.maxThink));
                 const amount = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * wallet.personality.sizeMult * volMult).toFixed(4));
                 wallet.holdCycles = Math.floor(getRandomFloat(wallet.personality.minHold, wallet.personality.maxHold));
                 return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amount, cid, true);
-            } 
+            }
             return null;
         },
         sellLogic: async (wallet, idx, volMult, conn, cid) => {
             if (!wallet.personality) return null;
-            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress); 
+            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
             if (bal <= 0.0001) return null;
             if (wallet.holdCycles <= 0 && Math.random() < wallet.personality.sellProb) {
                 await sleep(getRandomFloat(wallet.personality.minThink, wallet.personality.maxThink));
                 const sellAmt = Math.random() < 0.7 ? 'auto' : (bal * getRandomFloat(0.3, 0.7)).toFixed(6);
                 return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, sellAmt, cid, true);
-            } else if (wallet.holdCycles > 0) wallet.holdCycles--; 
+            } else if (wallet.holdCycles > 0) wallet.holdCycles--;
             return null;
         },
-        cycles: STATE.numberOfCycles, 
+        cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
 
 // 🕸️ Strategy: Web of Activity
 async function executeWebOfActivity(chatId, connection) {
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 5;
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     return executeStrategyTemplate(chatId, connection, {
         name: 'Web of Activity', walletCount, fundAmount: 0.05,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const amt = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult).toFixed(4)); 
-            return swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const amt = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult).toFixed(4));
+            return swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true);
         },
-        sellLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress); 
-            if (bal > 0 && Math.random() < 0.6) return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true); 
-            return null; 
+        sellLogic: async (wallet, idx, volMult, conn, cid) => {
+            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
+            if (bal > 0 && Math.random() < 0.6) return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true);
+            return null;
         },
-        cycles: STATE.numberOfCycles, 
+        cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
 
 // ⚡ Strategy: Spam Mode
 async function executeSpamMode(chatId, connection) {
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 5;
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     const result = await executeStrategyTemplate(chatId, connection, {
         name: 'Micro-Spam Mode', walletCount, fundAmount: STATE.fundAmountPerWallet,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const jitteredSpam = parseFloat((STATE.spamMicroBuyAmount * (0.8 + Math.random() * 0.4)).toFixed(6)); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredSpam, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const jitteredSpam = parseFloat((STATE.spamMicroBuyAmount * (0.8 + Math.random() * 0.4)).toFixed(6));
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredSpam, cid, true);
         },
-        sellLogic: async () => null, 
-        cycles: STATE.numberOfCycles, 
-        needsFunding: !STATE.useWalletPool
+        sellLogic: async () => null,
+        cycles: STATE.numberOfCycles,
+        needsFunding: !STATE.useWalletPool,
+        autoDrain: false
     });
-    
+
     if (result.success && STATE.running && !isShuttingDown) {
         bot.sendMessage(chatId, `📉 Dumping accumulated tokens...`, { parse_mode: 'Markdown' });
-        const dumpWallets = walletManager.getWallets(walletCount);
+        const dumpWallets = result.wallets;
         await BatchSwapEngine.executeBatch(
-            dumpWallets, 
-            async (w) => { 
-                const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress); 
-                if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true); 
-                return null; 
-            }, 
-            STATE.batchConcurrency, 
-            null, 
+            dumpWallets,
+            async (w) => {
+                const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true);
+                return null;
+            },
+            STATE.batchConcurrency,
+            null,
             () => STATE.running && !isShuttingDown
         );
-        if (walletManager.isEphemeral()) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+        if (!STATE.useWalletPool) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     return result;
 }
 
 // 🚀 Strategy: Pump & Dump
 async function executePumpDump(chatId, connection) {
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 1;
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     const result = await executeStrategyTemplate(chatId, connection, {
         name: 'Pump & Dump', walletCount, fundAmount: STATE.fundAmountPerWallet,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const buyAmount = parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4)); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, buyAmount, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const buyAmount = parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4));
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, buyAmount, cid, true);
         },
-        sellLogic: async () => null, 
-        cycles: STATE.numberOfCycles, 
-        needsFunding: !STATE.useWalletPool
+        sellLogic: async () => null,
+        cycles: STATE.numberOfCycles,
+        needsFunding: !STATE.useWalletPool,
+        autoDrain: false
     });
-    
+
     if (result.success && STATE.running && !isShuttingDown) {
-        const dumpWallets = walletManager.getWallets(Math.min(5, walletCount));
+        const dumpWallets = result.wallets.slice(0, 5);
         bot.sendMessage(chatId, `🔴 *Dumping in stealth chunks*...`, { parse_mode: 'Markdown' });
         for (const w of dumpWallets) {
             if (!STATE.running || isShuttingDown) break;
             const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
             if (bal > 0) {
-                const chunks = Math.floor(getRandomFloat(2, 4)); 
+                const chunks = Math.floor(getRandomFloat(2, 4));
                 const chunkSize = bal / chunks;
-                for (let c = 0; c < chunks; c++) { 
-                    const amt = (c === chunks-1) ? 'auto' : chunkSize.toFixed(6); 
-                    await swap(STATE.tokenAddress, SOL_ADDR, w, connection, amt, chatId, true); 
-                    if (c < chunks - 1) await sleep(getJitteredInterval(1000, 20)); 
+                for (let c = 0; c < chunks; c++) {
+                    const amt = (c === chunks - 1) ? 'auto' : chunkSize.toFixed(6);
+                    await swap(STATE.tokenAddress, SOL_ADDR, w, connection, amt, chatId, true);
+                    if (c < chunks - 1) await sleep(getJitteredInterval(1000, 20));
                 }
             }
         }
-        if (walletManager.isEphemeral()) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+        if (!STATE.useWalletPool) await walletManager.drainWallets(dumpWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     return result;
 }
 
 // 📐 Strategy: Chart Pattern
 async function executeChartPattern(chatId, connection) {
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 5;
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     return executeStrategyTemplate(chatId, connection, {
         name: `Chart Pattern: ${STATE.chartPattern}`, walletCount, fundAmount: STATE.fundAmountPerWallet,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
             const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); let buyMult;
             switch (STATE.chartPattern) {
-                case 'ASCENDING': buyMult = 0.5 + progress; break; 
+                case 'ASCENDING': buyMult = 0.5 + progress; break;
                 case 'DESCENDING': buyMult = 1.5 - progress; break;
                 case 'SIDEWAYS': buyMult = 0.9 + Math.sin(progress * Math.PI * 4) * 0.2; break;
-                case 'CUP_HANDLE': 
-                    const cup = Math.sin(progress * Math.PI), 
-                    handle = progress > 0.8 ? 0.3 * Math.sin((progress - 0.8) * Math.PI / 0.2) : 0; 
-                    buyMult = 0.4 + cup * 0.8 - handle * 0.3; 
+                case 'CUP_HANDLE':
+                    const cup = Math.sin(progress * Math.PI),
+                        handle = progress > 0.8 ? 0.3 * Math.sin((progress - 0.8) * Math.PI / 0.2) : 0;
+                    buyMult = 0.4 + cup * 0.8 - handle * 0.3;
                     break;
                 case 'BREAKOUT': default: buyMult = progress < 0.7 ? 0.6 : 1.8;
             }
@@ -814,19 +842,19 @@ async function executeChartPattern(chatId, connection) {
         sellLogic: async (wallet, idx, volMult, conn, cid) => {
             const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); let sellFrac;
             switch (STATE.chartPattern) {
-                case 'ASCENDING': sellFrac = 0.3 + (1 - progress) * 0.4; break; 
+                case 'ASCENDING': sellFrac = 0.3 + (1 - progress) * 0.4; break;
                 case 'DESCENDING': sellFrac = 0.3 + progress * 0.6; break;
-                case 'SIDEWAYS': case 'CUP_HANDLE': sellFrac = 0.85; break; 
+                case 'SIDEWAYS': case 'CUP_HANDLE': sellFrac = 0.85; break;
                 case 'BREAKOUT': default: sellFrac = progress < 0.7 ? 0.9 : 0.2;
             }
             const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
-            if (bal > 0) { 
-                const sellAmt = parseFloat((bal * sellFrac).toFixed(6)); 
-                return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, sellAmt > 0 ? sellAmt : 'auto', cid, true); 
+            if (bal > 0) {
+                const sellAmt = parseFloat((bal * sellFrac).toFixed(6));
+                return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, sellAmt > 0 ? sellAmt : 'auto', cid, true);
             }
             return null;
         },
-        cycles: STATE.numberOfCycles, 
+        cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
@@ -836,47 +864,48 @@ async function executeHolderGrowth(chatId, connection) {
     const count = STATE.useWalletPool ? Math.min(STATE.holderWallets, walletManager.size) : STATE.holderWallets;
     return executeStrategyTemplate(chatId, connection, {
         name: 'Holder Growth', walletCount: count, fundAmount: STATE.holderBuyAmount + 0.003,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const amtVariation = getRandomFloat(STATE.holderBuyAmount * 0.7, STATE.holderBuyAmount * 1.3); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amtVariation, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const amtVariation = getRandomFloat(STATE.holderBuyAmount * 0.7, STATE.holderBuyAmount * 1.3);
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amtVariation, cid, true);
         },
-        sellLogic: async () => null, 
-        cycles: 1, 
+        sellLogic: async () => null,
+        cycles: 1,
         needsFunding: !STATE.useWalletPool
     });
 }
 
 // 🐋 Strategy: Whale Simulation
 async function executeWhaleSimulation(chatId, connection) {
-    const whaleCount = STATE.useWalletPool ? Math.min(5, walletManager.size) : 1;
+    const whaleCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     const result = await executeStrategyTemplate(chatId, connection, {
         name: 'Whale Simulation', walletCount: whaleCount, fundAmount: STATE.whaleBuyAmount + 0.01,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const jitteredAmt = parseFloat((STATE.whaleBuyAmount * (0.85 + Math.random() * 0.3) * volMult).toFixed(4)); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredAmt, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const jitteredAmt = parseFloat((STATE.whaleBuyAmount * (0.85 + Math.random() * 0.3) * volMult).toFixed(4));
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredAmt, cid, true);
         },
-        sellLogic: async () => null, 
-        cycles: STATE.numberOfCycles, 
-        needsFunding: !STATE.useWalletPool
+        sellLogic: async () => null,
+        cycles: STATE.numberOfCycles,
+        needsFunding: !STATE.useWalletPool,
+        autoDrain: false
     });
-    
+
     if (result.success && STATE.running && !isShuttingDown) {
-        const activeWhales = walletManager.getWallets(whaleCount);
+        const activeWhales = result.wallets;
         bot.sendMessage(chatId, `🔴 Whale dumping ${STATE.whaleSellPercent}% in stealth chunks...`, { parse_mode: 'Markdown' });
         for (const w of activeWhales) {
             if (!STATE.running || isShuttingDown) break;
             const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
             if (bal > 0) {
-                const dumpChunks = Math.floor(getRandomFloat(2, 5)); 
+                const dumpChunks = Math.floor(getRandomFloat(2, 5));
                 const chunkPercent = (STATE.whaleSellPercent / 100) / dumpChunks;
-                for (let c = 0; c < dumpChunks; c++) { 
-                    const dumpAmt = parseFloat((bal * chunkPercent).toFixed(6)); 
-                    await swap(STATE.tokenAddress, SOL_ADDR, w, connection, dumpAmt, chatId, true); 
-                    await sleep(getJitteredInterval(800, 15)); 
+                for (let c = 0; c < dumpChunks; c++) {
+                    const dumpAmt = parseFloat((bal * chunkPercent).toFixed(6));
+                    await swap(STATE.tokenAddress, SOL_ADDR, w, connection, dumpAmt, chatId, true);
+                    await sleep(getJitteredInterval(800, 15));
                 }
             }
         }
-        if (walletManager.isEphemeral()) await walletManager.drainWallets(activeWhales, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+        if (!STATE.useWalletPool) await walletManager.drainWallets(activeWhales, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     return result;
 }
@@ -886,17 +915,17 @@ async function executeVolumeBoost(chatId, connection) {
     const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.volumeBoostMultiplier;
     return executeStrategyTemplate(chatId, connection, {
         name: 'Volume Boost', walletCount, fundAmount: STATE.volumeBoostMaxAmount + 0.01,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            await sleep(getRandomFloat(0, 2000)); 
-            const amt = parseFloat(getRandomFloat(STATE.volumeBoostMinAmount, STATE.volumeBoostMaxAmount).toFixed(4)); 
-            return swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            await sleep(getRandomFloat(0, 2000));
+            const amt = parseFloat(getRandomFloat(STATE.volumeBoostMinAmount, STATE.volumeBoostMaxAmount).toFixed(4));
+            return swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true);
         },
-        sellLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress); 
-            if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true); 
-            return null; 
+        sellLogic: async (wallet, idx, volMult, conn, cid) => {
+            const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
+            if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true);
+            return null;
         },
-        cycles: STATE.volumeBoostCycles, 
+        cycles: STATE.volumeBoostCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
@@ -905,232 +934,233 @@ async function executeVolumeBoost(chatId, connection) {
 async function executeTrendingStrategy(chatId, connection) {
     const mode = STATE.trendingMode;
     const intensity = STATE.trendingIntensity;
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 1;
-    
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
+
     if (mode === 'VIRAL_PUMP') {
         const cycles = Math.floor(5 + intensity * 2);
+        const ephemWallets = !STATE.useWalletPool ? fetchWallets(walletCount) : [];
+        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+
         for (let i = 0; i < cycles && STATE.running && !isShuttingDown; i++) {
-            const freshWallets = walletManager.getWallets(walletCount);
-            if (walletManager.isEphemeral() && i === 0) await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
-            
+            const freshWallets = STATE.useWalletPool ? fetchWallets(walletCount) : ephemWallets;
+
             const buyMult = Math.pow(1.3, i / cycles);
             const buyAmt = parseFloat((STATE.minBuyAmount * buyMult * intensity * 0.3).toFixed(4));
             bot.sendMessage(chatId, `🚀 Viral buy ${i + 1}/${cycles}: \`${buyAmt}\` SOL`, { parse_mode: 'Markdown' });
             await BatchSwapEngine.executeBatch(
-                freshWallets, 
-                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true), 
-                STATE.batchConcurrency, 
-                null, 
+                freshWallets,
+                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true),
+                STATE.batchConcurrency,
+                null,
                 () => STATE.running && !isShuttingDown
             );
-            
+
             if (i % 2 === 0 && STATE.running && !isShuttingDown) {
-                const sellWallets = walletManager.getWallets(walletCount);
                 await BatchSwapEngine.executeBatch(
-                    sellWallets, 
-                    async (w) => { 
-                        const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress); 
-                        if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, parseFloat((bal * 0.1).toFixed(6)), chatId, true); 
-                        return null; 
-                    }, 
-                    STATE.batchConcurrency, 
-                    null, 
+                    freshWallets,
+                    async (w) => {
+                        const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                        if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, parseFloat((bal * 0.1).toFixed(6)), chatId, true);
+                        return null;
+                    },
+                    STATE.batchConcurrency,
+                    null,
                     () => STATE.running && !isShuttingDown
                 );
             }
-            if (walletManager.isEphemeral()) await walletManager.drainWallets(freshWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
             await sleep(getJitteredInterval(2000, STATE.jitterPercentage));
         }
+        if (!STATE.useWalletPool) await walletManager.drainWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     else if (mode === 'ORGANIC_GROWTH') {
         const cycles = Math.floor(10 + intensity);
+        const poolSize = Math.max(1, Math.floor(walletCount * 0.2));
+        const ephemWallets = !STATE.useWalletPool ? fetchWallets(poolSize) : [];
+        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+
         for (let i = 0; i < cycles && STATE.running && !isShuttingDown; i++) {
-            const randomWallets = walletManager.getWallets(Math.max(1, Math.floor(walletCount * 0.2)));
-            if (walletManager.isEphemeral() && i === 0) await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
-            
+            const randomWallets = STATE.useWalletPool ? fetchWallets(poolSize) : ephemWallets;
+
             const buyAmt = parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4));
             bot.sendMessage(chatId, `🌱 Organic buy ${i + 1}/${cycles}: \`${buyAmt}\` SOL`, { parse_mode: 'Markdown' });
             await BatchSwapEngine.executeBatch(
-                randomWallets, 
-                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true), 
-                STATE.batchConcurrency, 
-                null, 
+                randomWallets,
+                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true),
+                STATE.batchConcurrency,
+                null,
                 () => STATE.running && !isShuttingDown
             );
-            
+
             const pause = getJitteredInterval(5000 + intensity * 2000, 50);
             await sleep(pause);
-            
+
             if (Math.random() < 0.2 && STATE.running && !isShuttingDown) {
-                const sellWallets = walletManager.getWallets(randomWallets.length);
+                const sellWallets = randomWallets;
                 await BatchSwapEngine.executeBatch(
-                    sellWallets, 
-                    async (w) => { 
-                        const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress); 
-                        if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, parseFloat((bal * 0.15).toFixed(6)), chatId, true); 
-                        return null; 
-                    }, 
-                    STATE.batchConcurrency, 
-                    null, 
+                    sellWallets,
+                    async (w) => {
+                        const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                        if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, parseFloat((bal * 0.15).toFixed(6)), chatId, true);
+                        return null;
+                    },
+                    STATE.batchConcurrency,
+                    null,
                     () => STATE.running && !isShuttingDown
                 );
             }
-            if (walletManager.isEphemeral()) await walletManager.drainWallets(randomWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
         }
+        if (!STATE.useWalletPool) await walletManager.drainWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     else if (mode === 'FOMO_WAVE') {
         const waves = Math.floor(2 + intensity * 0.5);
+        const surgeSize = Math.max(1, Math.floor(walletCount * 0.4));
+        const ephemWallets = !STATE.useWalletPool ? fetchWallets(surgeSize) : [];
+        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+
         for (let wave = 0; wave < waves && STATE.running && !isShuttingDown; wave++) {
             bot.sendMessage(chatId, `🌊 FOMO Wave ${wave + 1}/${waves} - Rapid buys!`, { parse_mode: 'Markdown' });
             const buysPerWave = Math.floor(3 + intensity);
-            
+
             for (let i = 0; i < buysPerWave && STATE.running && !isShuttingDown; i++) {
-                const surgeWallets = walletManager.getWallets(Math.max(1, Math.floor(walletCount * 0.4)));
-                if (walletManager.isEphemeral() && i === 0 && wave === 0) await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
-                
+                const surgeWallets = STATE.useWalletPool ? fetchWallets(surgeSize) : ephemWallets;
+
                 const buyAmt = parseFloat(getRandomFloat(STATE.minBuyAmount * 1.5, STATE.maxBuyAmount * 2).toFixed(4));
                 await BatchSwapEngine.executeBatch(
-                    surgeWallets, 
-                    async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true), 
-                    STATE.batchConcurrency, 
-                    null, 
+                    surgeWallets,
+                    async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true),
+                    STATE.batchConcurrency,
+                    null,
                     () => STATE.running && !isShuttingDown
                 );
                 await sleep(1500);
-                if (walletManager.isEphemeral() && i === buysPerWave - 1) await walletManager.drainWallets(surgeWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
             }
-            
+
             if (wave < waves - 1 && STATE.running && !isShuttingDown) {
                 const cooldown = getJitteredInterval(15000 + intensity * 3000, 30);
                 bot.sendMessage(chatId, `⏸️ Cooldown: ${Math.round(cooldown / 1000)}s...`, { parse_mode: 'Markdown' });
                 await sleep(cooldown);
             }
         }
+        if (!STATE.useWalletPool) await walletManager.drainWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     else if (mode === 'LIQUIDITY_LADDER') {
         const steps = Math.floor(5 + intensity);
+        const ladderSize = Math.max(1, Math.floor(walletCount * 0.3));
+        const ephemWallets = !STATE.useWalletPool ? fetchWallets(ladderSize) : [];
+        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+
         for (let i = 0; i < steps && STATE.running && !isShuttingDown; i++) {
-            const ladders = walletManager.getWallets(Math.max(1, Math.floor(walletCount * 0.3)));
-            if (walletManager.isEphemeral() && i === 0) await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
-            
+            const ladders = STATE.useWalletPool ? fetchWallets(ladderSize) : ephemWallets;
+
             const stepMult = 1 + (i / steps) * intensity * 0.4;
             const buyAmt = parseFloat((STATE.minBuyAmount * stepMult).toFixed(4));
             bot.sendMessage(chatId, `🪜 Ladder step ${i + 1}/${steps}: \`${buyAmt}\` SOL`, { parse_mode: 'Markdown' });
             await BatchSwapEngine.executeBatch(
-                ladders, 
-                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true), 
-                STATE.batchConcurrency, 
-                null, 
+                ladders,
+                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, buyAmt, chatId, true),
+                STATE.batchConcurrency,
+                null,
                 () => STATE.running && !isShuttingDown
             );
             await sleep(getJitteredInterval(STATE.intervalBetweenActions, STATE.jitterPercentage));
-            if (walletManager.isEphemeral() && i === steps - 1) await walletManager.drainWallets(ladders, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
         }
+        if (!STATE.useWalletPool) await walletManager.drainWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
     else if (mode === 'WASH_TRADING') {
         const pairs = Math.floor(10 + intensity * 3);
         bot.sendMessage(chatId, `🔄 Wash Trading: ${pairs} pairs`, { parse_mode: 'Markdown' });
-        
+
+        const ephemBuyers = !STATE.useWalletPool ? fetchWallets(1) : [];
+        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+
         for (let i = 0; i < pairs && STATE.running && !isShuttingDown; i++) {
-            const buyers = walletManager.getWallets(1);
-            const sellers = walletManager.getWallets(1);
-            if (walletManager.isEphemeral() && i === 0) {
-                await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
-            }
-            
+            const buyers = STATE.useWalletPool ? fetchWallets(1) : ephemBuyers;
+            const sellers = STATE.useWalletPool ? fetchWallets(1) : buyers;
+
             const amt = parseFloat(getRandomFloat(STATE.minBuyAmount * 0.5, STATE.maxBuyAmount * 0.7).toFixed(4));
             await BatchSwapEngine.executeBatch(
-                buyers, 
-                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, amt, chatId, true), 
-                STATE.batchConcurrency, 
-                null, 
+                buyers,
+                async (w) => await swap(SOL_ADDR, STATE.tokenAddress, w, connection, amt, chatId, true),
+                STATE.batchConcurrency,
+                null,
                 () => STATE.running && !isShuttingDown
             );
             await sleep(getJitteredInterval(2000, 10));
-            
+
             await BatchSwapEngine.executeBatch(
-                sellers, 
-                async (w) => { 
-                    const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress); 
-                    if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true); 
-                    return null; 
-                }, 
-                STATE.batchConcurrency, 
-                null, 
+                sellers,
+                async (w) => {
+                    const bal = await getTokenBalance(connection, w.publicKey, STATE.tokenAddress);
+                    if (bal > 0) return swap(STATE.tokenAddress, SOL_ADDR, w, connection, 'auto', chatId, true);
+                    return null;
+                },
+                STATE.batchConcurrency,
+                null,
                 () => STATE.running && !isShuttingDown
             );
-            
-            if ((i + 1) % 5 === 0) bot.sendMessage(chatId, `🔄 Progress: ${i + 1}/${pairs}`, { parse_mode: 'Markdown' }).catch(() => {});
+
+            if ((i + 1) % 5 === 0) bot.sendMessage(chatId, `🔄 Progress: ${i + 1}/${pairs}`, { parse_mode: 'Markdown' }).catch(() => { });
             await sleep(getJitteredInterval(3000, STATE.jitterPercentage));
-            if (walletManager.isEphemeral() && i === pairs - 1) {
-                await walletManager.drainWallets(buyers, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
-                await walletManager.drainWallets(sellers, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
-            }
         }
+        if (!STATE.useWalletPool) await walletManager.drainWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     }
-    
+
     bot.sendMessage(chatId, `🏁 Trending strategy *${mode}* complete!`, { parse_mode: 'Markdown' });
     return { success: true };
 }
 
 // 🌪️ Strategy: Jito MEV Wash
 async function executeJitoMevWash(chatId, connection) {
-    if (!STATE.useJito) { 
-        bot.sendMessage(chatId, `❌ Enable Jito in settings to use MEV Wash!`, { parse_mode: 'Markdown' }); 
-        return; 
+    if (!STATE.useJito) {
+        bot.sendMessage(chatId, `❌ Enable Jito in settings to use MEV Wash!`, { parse_mode: 'Markdown' });
+        return;
     }
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 1;
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
     return executeStrategyTemplate(chatId, connection, {
         name: 'JITO MEV Wash', walletCount, fundAmount: STATE.fundAmountPerWallet,
-        buyLogic: async (wallet, idx, volMult, conn, cid) => { 
-            const amt = parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4)); 
-            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true); 
+        buyLogic: async (wallet, idx, volMult, conn, cid) => {
+            const amt = parseFloat(getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount).toFixed(4));
+            return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amt, cid, true);
         },
-        sellLogic: async (wallet, idx, volMult, conn, cid) => { 
-            await sleep(1000); 
-            return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true); 
+        sellLogic: async (wallet, idx, volMult, conn, cid) => {
+            await sleep(1000);
+            return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true);
         },
-        cycles: STATE.numberOfCycles, 
+        cycles: STATE.numberOfCycles,
         needsFunding: !STATE.useWalletPool
     });
 }
 
 // 📱 Strategy: KOL Alpha Call
 async function executeKolAlphaCall(chatId, connection) {
-    const swarmSize = Math.min(STATE.kolRetailSwarmSize, STATE.useWalletPool ? walletManager.size : 20);
-    
-    const whaleWallet = walletManager.getWallets(1)[0];
+    const swarmSize = STATE.useWalletPool ? Math.min(STATE.kolRetailSwarmSize, walletManager.size) : STATE.kolRetailSwarmSize;
+
+    const whaleWallet = fetchWallets(1)[0];
     const whaleAmt = parseFloat((getRandomFloat(STATE.maxBuyAmount * 2, STATE.maxBuyAmount * 5)).toFixed(4));
     bot.sendMessage(chatId, `🐋 Whale buy: \`${whaleAmt}\` SOL`, { parse_mode: 'Markdown' });
     await swap(SOL_ADDR, STATE.tokenAddress, whaleWallet, connection, whaleAmt, chatId, true);
     await sleep(2000);
 
-    const swarmWallets = walletManager.getWallets(swarmSize);
-    if (walletManager.isEphemeral()) {
+    const swarmWallets = fetchWallets(swarmSize);
+    if (!STATE.useWalletPool) {
         bot.sendMessage(chatId, `🐟 Funding ${swarmSize} retail wallets...`, { parse_mode: 'Markdown' });
-        for (const w of swarmWallets) {
-            try {
-                await sendSOL(connection, masterKeypair, w.publicKey, STATE.minBuyAmount + 0.005);
-            } catch (e) {
-                logger.warn(`[KOL] Failed to fund wallet: ${e.message}`);
-            }
-        }
+        await walletManager.fundWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.minBuyAmount + 0.005, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
     }
     bot.sendMessage(chatId, `🚀 Retail FOMO: ${swarmWallets.length} wallets`, { parse_mode: 'Markdown' });
     await BatchSwapEngine.executeBatch(
-        swarmWallets, 
-        (w) => { 
-            const amt = parseFloat(getRandomFloat(STATE.minBuyAmount * 0.1, STATE.minBuyAmount * 0.8).toFixed(4)); 
-            return swap(SOL_ADDR, STATE.tokenAddress, w, connection, amt, chatId, true); 
-        }, 
-        STATE.batchConcurrency, 
-        (p) => { 
-            if (p.completed === p.total) bot.sendMessage(chatId, `✅ KOL Call: ${p.successes} retail buys executed`, { parse_mode: 'Markdown' }); 
-        }, 
+        swarmWallets,
+        (w) => {
+            const amt = parseFloat(getRandomFloat(STATE.minBuyAmount * 0.1, STATE.minBuyAmount * 0.8).toFixed(4));
+            return swap(SOL_ADDR, STATE.tokenAddress, w, connection, amt, chatId, true);
+        },
+        STATE.batchConcurrency,
+        (p) => {
+            if (p.completed === p.total) bot.sendMessage(chatId, `✅ KOL Call: ${p.successes} retail buys executed`, { parse_mode: 'Markdown' });
+        },
         () => STATE.running && !isShuttingDown
     );
-    
-    if (walletManager.isEphemeral()) await walletManager.drainWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+
+    if (!STATE.useWalletPool) await walletManager.drainWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     bot.sendMessage(chatId, `✅ KOL Alpha Call complete!`, { parse_mode: 'Markdown' });
     return { success: true };
 }
@@ -1138,31 +1168,31 @@ async function executeKolAlphaCall(chatId, connection) {
 // 🐻 Strategy: Bull Trap
 async function executeBullTrap(chatId, connection) {
     bot.sendMessage(chatId, `🐻 *Bull Trap*\nFake breakout → stealth dump`, { parse_mode: 'Markdown' });
-    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : 1;
-    const trapWallet = walletManager.getWallets(1)[0];
-    if (walletManager.isEphemeral()) await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet + 0.01, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
+    const trapWallet = fetchWallets(1)[0];
+    if (!STATE.useWalletPool) await walletManager.fundWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet + 0.01, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
 
     const steps = Math.floor(getRandomFloat(4, 7));
     for (let i = 0; i < steps && STATE.running && !isShuttingDown; i++) {
         const buyAmt = Math.random() < 0.3 ? getRandomFloat(STATE.minBuyAmount * 1.5, STATE.maxBuyAmount * 2) : getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount);
         const finalAmt = parseFloat(buyAmt.toFixed(4));
-        bot.sendMessage(chatId, `📈 Bait ${i+1}/${steps}: \`${finalAmt}\` SOL`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `📈 Bait ${i + 1}/${steps}: \`${finalAmt}\` SOL`, { parse_mode: 'Markdown' });
         await swap(SOL_ADDR, STATE.tokenAddress, trapWallet, connection, finalAmt, chatId, true);
         await sleep(getJitteredInterval(Math.floor(getRandomFloat(1000, 4000)), STATE.jitterPercentage));
     }
     if (!STATE.running || isShuttingDown) return;
 
     const waitTime = getJitteredInterval(Math.floor(getRandomFloat(5000, 12000)), STATE.jitterPercentage);
-    bot.sendMessage(chatId, `⏳ Waiting \`${Math.round(waitTime/1000)}s\` for reaction...`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `⏳ Waiting \`${Math.round(waitTime / 1000)}s\` for reaction...`, { parse_mode: 'Markdown' });
     await sleep(waitTime);
     if (!STATE.running || isShuttingDown) return;
 
     const totalTokens = await getTokenBalance(connection, trapWallet.publicKey, STATE.tokenAddress);
-    if (totalTokens <= 0) { 
-        bot.sendMessage(chatId, `⚠️ No tokens to dump. Aborted.`, { parse_mode: 'Markdown' }); 
-        return; 
+    if (totalTokens <= 0) {
+        bot.sendMessage(chatId, `⚠️ No tokens to dump. Aborted.`, { parse_mode: 'Markdown' });
+        return;
     }
-    const oldSlippage = STATE.slippage; 
+    const oldSlippage = STATE.slippage;
     STATE.slippage = STATE.bullTrapSlippage || 20;
     const chunks = Math.floor(getRandomFloat(2, 5)), chunkSize = totalTokens / chunks;
     bot.sendMessage(chatId, `🔴 Dumping \`${totalTokens.toFixed(4)}\` tokens in ${chunks} chunks @ ${STATE.slippage}% slippage`, { parse_mode: 'Markdown' });
@@ -1172,24 +1202,24 @@ async function executeBullTrap(chatId, connection) {
         if (c < chunks - 1) await sleep(getJitteredInterval(Math.floor(getRandomFloat(500, 2000)), STATE.jitterPercentage));
     }
     STATE.slippage = oldSlippage;
-    if (walletManager.isEphemeral()) await walletManager.drainWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) await walletManager.drainWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     bot.sendMessage(chatId, `✅ Bull Trap complete: dumped in ${chunks} chunks.`, { parse_mode: 'Markdown' });
     return { success: true };
 }
 
 // 🎁 Strategy: Social Proof Airdrop
 async function executeSocialProofAirdrop(chatId, connection) {
-    const wCount = STATE.useWalletPool ? Math.min(STATE.airdropWalletCount, walletManager.size) : Math.min(STATE.airdropWalletCount, 30);
+    const wCount = STATE.useWalletPool ? Math.min(STATE.airdropWalletCount, walletManager.size) : STATE.airdropWalletCount;
     return executeStrategyTemplate(chatId, connection, {
         name: 'Social Proof Airdrop', walletCount: wCount, fundAmount: 0.015,
-        buyLogic: async (w, index, volMult, conn, cid) => { 
-            const amt = getRandomFloat(0.0005, 0.01); 
-            const txid = await swap(SOL_ADDR, STATE.tokenAddress, w, conn, amt, cid, true); 
-            await sleep(getRandomFloat(2000, 8000)); 
-            return txid; 
+        buyLogic: async (w, index, volMult, conn, cid) => {
+            const amt = getRandomFloat(0.0005, 0.01);
+            const txid = await swap(SOL_ADDR, STATE.tokenAddress, w, conn, amt, cid, true);
+            await sleep(getRandomFloat(2000, 8000));
+            return txid;
         },
-        sellLogic: async () => null, 
-        cycles: 1, 
+        sellLogic: async () => null,
+        cycles: 1,
         needsFunding: !STATE.useWalletPool
     });
 }
@@ -1214,9 +1244,10 @@ async function executeLadderStrategy(chatId, connection) {
 // NEW STRATEGY: Sniper Launch
 async function executeSniperStrategy(chatId, connection) {
     bot.sendMessage(chatId, `⚡ *SNIPER MODE* — Fast entry + staged exits`, { parse_mode: 'Markdown' });
-    const wallets = walletManager.getWallets(STATE.walletsPerCycle);
+    const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         await sleep(Math.random() * STATE.sniperEntrySpeedMs);
@@ -1229,17 +1260,18 @@ async function executeSniperStrategy(chatId, connection) {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
     }, STATE.batchConcurrency);
 
-    if (walletManager.isEphemeral()) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
 }
 
 // NEW STRATEGY: Advanced Wash Trading
 async function executeAdvWashStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🔄 *ADVANCED WASH* — Circular wash with ${STATE.washGroupCount} groups`, { parse_mode: 'Markdown' });
-    const wallets = walletManager.getWallets(STATE.walletsPerCycle);
+    const wallets = fetchWallets(STATE.walletsPerCycle);
     const groupSize = Math.floor(wallets.length / STATE.washGroupCount);
 
-    await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     for (let c = 0; c < STATE.washCyclesPerGroup && STATE.running; c++) {
         for (let g = 0; g < STATE.washGroupCount; g++) {
@@ -1254,16 +1286,17 @@ async function executeAdvWashStrategy(chatId, connection) {
             await sleep(1200);
         }
     }
-    if (walletManager.isEphemeral()) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
 }
 
 // NEW STRATEGY: Mirror Whale
 async function executeMirrorWhaleStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🐳 *MIRROR WHALE* — Copying top holders in real-time`, { parse_mode: 'Markdown' });
-    const wallets = walletManager.getWallets(STATE.walletsPerCycle);
+    const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         const amount = getRandomFloat(STATE.mirrorBuyThresholdSOL * 0.8, STATE.mirrorBuyThresholdSOL * 1.5);
@@ -1275,16 +1308,17 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
     }, STATE.batchConcurrency);
 
-    if (walletManager.isEphemeral()) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
 }
 
 // NEW STRATEGY: Curve Pump
 async function executeCurvePumpStrategy(chatId, connection) {
     bot.sendMessage(chatId, `📈 *CURVE PUMP* — Pushing bonding curve to ${STATE.curveTargetPercent}%`, { parse_mode: 'Markdown' });
-    const wallets = walletManager.getWallets(STATE.walletsPerCycle);
+    const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet, idx) => {
         const intensity = idx < 10 ? STATE.curveBuyIntensity : 1;
@@ -1298,7 +1332,7 @@ async function executeCurvePumpStrategy(chatId, connection) {
         return await swap(STATE.tokenAddress, SOL_ADDR, wallet, connection, 'auto', chatId, true);
     }, STATE.batchConcurrency);
 
-    if (walletManager.isEphemeral()) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
+    if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
 }
 
@@ -1562,7 +1596,7 @@ function showSettingsMenu(chatId) {
 }
 
 function showBasicSettings(chatId) {
-    const tokenStatus = STATE.tokenAddress ? `\`${STATE.tokenAddress.slice(0,8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
+    const tokenStatus = STATE.tokenAddress ? `\`${STATE.tokenAddress.slice(0, 8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
     bot.sendMessage(chatId,
         `📱 *BASIC CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
         `🪙 *Token:* ${tokenStatus}\n` +
@@ -1745,7 +1779,7 @@ function showWalletPoolMenu(chatId) {
 
 function showSmartSellMenu(chatId) {
     const devStatus = STATE.smartSellDevWalletPubkey
-        ? `✅ \`${STATE.smartSellDevWalletPubkey.slice(0,8)}...\``
+        ? `✅ \`${STATE.smartSellDevWalletPubkey.slice(0, 8)}...\``
         : '❌ Not set';
     bot.sendMessage(chatId,
         `🧠 *SMART SELL*\n\n` +
@@ -1825,7 +1859,7 @@ async function showDashboard(chatId) {
         );
     } catch (e) {
         logger.error(`[Dashboard] Error: ${e.message}`);
-        bot.sendMessage(chatId, `⚠️ Could not fetch status: ${e.message}`, { parse_mode: 'Markdown' }).catch(() => {});
+        bot.sendMessage(chatId, `⚠️ Could not fetch status: ${e.message}`, { parse_mode: 'Markdown' }).catch(() => { });
     }
 }
 
@@ -1838,11 +1872,11 @@ function showWallet(chatId) {
 function promptSetting(chatId, prompt, callback) {
     const cid = chatId.toString();
     clearSession(cid);
-    bot.sendMessage(chatId, prompt, { parse_mode: "Markdown", reply_markup: { force_reply: true, selective: true } }).catch(() => {});
+    bot.sendMessage(chatId, prompt, { parse_mode: "Markdown", reply_markup: { force_reply: true, selective: true } }).catch(() => { });
     const timeout = setTimeout(() => {
         if (userSessions.has(cid)) {
             userSessions.delete(cid);
-            bot.sendMessage(chatId, "⏰ Prompt timed out. Try again.", { parse_mode: 'Markdown' }).catch(() => {});
+            bot.sendMessage(chatId, "⏰ Prompt timed out. Try again.", { parse_mode: 'Markdown' }).catch(() => { });
         }
     }, 60000);
     userSessions.set(cid, { action: 'prompt', timeout, callback, created: Date.now() });
@@ -1872,15 +1906,15 @@ bot.on('callback_query', async (callbackQuery) => {
     const action = callbackQuery.data;
 
     if (!isAdmin(chatId)) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: "⛔ Unauthorized", show_alert: true }).catch(() => {});
+        bot.answerCallbackQuery(callbackQuery.id, { text: "⛔ Unauthorized", show_alert: true }).catch(() => { });
         return;
     }
     if (isRateLimited(chatId)) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: "⏳ Please wait", show_alert: false }).catch(() => {});
+        bot.answerCallbackQuery(callbackQuery.id, { text: "⏳ Please wait", show_alert: false }).catch(() => { });
         return;
     }
     // Catch stale callback query errors ("query is too old")
-    bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+    bot.answerCallbackQuery(callbackQuery.id).catch(() => { });
 
     // Engine control
     if (action === 'start_cycles') startEngine(chatId);
@@ -1931,37 +1965,37 @@ bot.on('callback_query', async (callbackQuery) => {
     // Basic settings
     else if (action === 'set_token_address') {
         promptSetting(chatId, `Reply with *Token CA*:`, (val) => {
-            try { STATE.tokenAddress = validateTokenAddress(val); saveConfig(); bot.sendMessage(chatId, `✅ Token: \`${STATE.tokenAddress}\``, { parse_mode: "Markdown" }); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`, { parse_mode: "Markdown" }); }
+            try { STATE.tokenAddress = validateTokenAddress(val); saveConfig(); bot.sendMessage(chatId, `✅ Token: \`${STATE.tokenAddress}\``, { parse_mode: "Markdown" }); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`, { parse_mode: "Markdown" }); }
             showBasicSettings(chatId);
         });
     }
     else if (action === 'set_min_buy') {
         promptSetting(chatId, `Reply with *Min Buy* SOL (0.0005-10):`, (val) => {
-            try { STATE.minBuyAmount = validateNumber(val, 0.0005, 10, "Min Buy"); saveConfig(); bot.sendMessage(chatId, `✅ Min Buy: \`${STATE.minBuyAmount}\` SOL`); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.minBuyAmount = validateNumber(val, 0.0005, 10, "Min Buy"); saveConfig(); bot.sendMessage(chatId, `✅ Min Buy: \`${STATE.minBuyAmount}\` SOL`); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showBasicSettings(chatId);
         });
     }
     else if (action === 'set_max_buy') {
         promptSetting(chatId, `Reply with *Max Buy* SOL (0.0005-10):`, (val) => {
-            try { STATE.maxBuyAmount = validateNumber(val, 0.0005, 10, "Max Buy"); if (STATE.maxBuyAmount < STATE.minBuyAmount) throw new Error("Max must be >= Min"); saveConfig(); bot.sendMessage(chatId, `✅ Max Buy: \`${STATE.maxBuyAmount}\` SOL`); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.maxBuyAmount = validateNumber(val, 0.0005, 10, "Max Buy"); if (STATE.maxBuyAmount < STATE.minBuyAmount) throw new Error("Max must be >= Min"); saveConfig(); bot.sendMessage(chatId, `✅ Max Buy: \`${STATE.maxBuyAmount}\` SOL`); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showBasicSettings(chatId);
         });
     }
     else if (action === 'set_cycles') {
         promptSetting(chatId, `Reply with *Cycles* (1-1000):`, (val) => {
-            try { STATE.numberOfCycles = validateNumber(val, 1, 1000, "Cycles"); saveConfig(); bot.sendMessage(chatId, `✅ Cycles: \`${STATE.numberOfCycles}\``); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.numberOfCycles = validateNumber(val, 1, 1000, "Cycles"); saveConfig(); bot.sendMessage(chatId, `✅ Cycles: \`${STATE.numberOfCycles}\``); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showBasicSettings(chatId);
         });
     }
     else if (action === 'set_jitter') {
         promptSetting(chatId, `Reply with *Jitter %* (0-100):`, (val) => {
-            try { STATE.jitterPercentage = validateNumber(val, 0, 100, "Jitter"); saveConfig(); bot.sendMessage(chatId, `✅ Jitter: \`${STATE.jitterPercentage}%\``); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.jitterPercentage = validateNumber(val, 0, 100, "Jitter"); saveConfig(); bot.sendMessage(chatId, `✅ Jitter: \`${STATE.jitterPercentage}%\``); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showBasicSettings(chatId);
         });
     }
     else if (action === 'set_interval') {
         promptSetting(chatId, `Reply with *Delay* seconds (1-300):`, (val) => {
-            try { const sec = validateNumber(val, 1, 300, "Delay"); STATE.intervalBetweenActions = sec * 1000; saveConfig(); bot.sendMessage(chatId, `✅ Delay: \`${sec}s\``); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { const sec = validateNumber(val, 1, 300, "Delay"); STATE.intervalBetweenActions = sec * 1000; saveConfig(); bot.sendMessage(chatId, `✅ Delay: \`${sec}s\``); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showBasicSettings(chatId);
         });
     }
@@ -1969,13 +2003,13 @@ bot.on('callback_query', async (callbackQuery) => {
     // Advanced settings
     else if (action === 'set_fees') {
         promptSetting(chatId, `Reply with *Priority Fee* SOL (0-0.01):`, (val) => {
-            try { STATE.priorityFee = validateNumber(val, 0, 0.01, "Priority Fee"); saveConfig(); bot.sendMessage(chatId, `✅ Fee: \`${STATE.priorityFee}\` SOL`); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.priorityFee = validateNumber(val, 0, 0.01, "Priority Fee"); saveConfig(); bot.sendMessage(chatId, `✅ Fee: \`${STATE.priorityFee}\` SOL`); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showAdvancedSettings(chatId);
         });
     }
     else if (action === 'set_slippage') {
         promptSetting(chatId, `Reply with *Slippage %* (0.5-50):`, (val) => {
-            try { STATE.slippage = validateNumber(val, 0.5, 50, "Slippage"); saveConfig(); bot.sendMessage(chatId, `✅ Slippage: \`${STATE.slippage}%\``); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.slippage = validateNumber(val, 0.5, 50, "Slippage"); saveConfig(); bot.sendMessage(chatId, `✅ Slippage: \`${STATE.slippage}%\``); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showAdvancedSettings(chatId);
         });
     }
@@ -2006,7 +2040,7 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'set_jito') { STATE.useJito = !STATE.useJito; saveConfig(); bot.sendMessage(chatId, `✅ Jito: *${STATE.useJito ? 'ON' : 'OFF'}*`, { parse_mode: 'Markdown' }); showJitoSettings(chatId); }
     else if (action === 'set_jito_tip') {
         promptSetting(chatId, `Reply with *Jito Tip* SOL (0.00001-0.1):`, (val) => {
-            try { STATE.jitoTipAmount = validateNumber(val, 0.00001, 0.1, "Jito Tip"); saveConfig(); bot.sendMessage(chatId, `✅ Tip: \`${STATE.jitoTipAmount}\` SOL`); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.jitoTipAmount = validateNumber(val, 0.00001, 0.1, "Jito Tip"); saveConfig(); bot.sendMessage(chatId, `✅ Tip: \`${STATE.jitoTipAmount}\` SOL`); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showJitoSettings(chatId);
         });
     }
@@ -2023,7 +2057,7 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'toggle_stealth_level') { STATE.fundingStealthLevel = STATE.fundingStealthLevel === 2 ? 1 : 2; saveConfig(); bot.sendMessage(chatId, `✅ Stealth: ${STATE.fundingStealthLevel === 2 ? 'Multi-hop' : 'Direct'}`); showStealthSettings(chatId); }
     else if (action === 'set_maker_depth') {
         promptSetting(chatId, `Reply with *Hop Depth* (1-5):`, (val) => {
-            try { STATE.makerFundingChainDepth = validateNumber(val, 1, 5, "Depth"); saveConfig(); bot.sendMessage(chatId, `✅ Depth: \`${STATE.makerFundingChainDepth}\``); } catch(e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+            try { STATE.makerFundingChainDepth = validateNumber(val, 1, 5, "Depth"); saveConfig(); bot.sendMessage(chatId, `✅ Depth: \`${STATE.makerFundingChainDepth}\``); } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
             showStealthSettings(chatId);
         });
     }
