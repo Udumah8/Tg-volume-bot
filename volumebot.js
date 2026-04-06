@@ -602,6 +602,15 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
     const isEphemeral = !STATE.useWalletPool;
 
     if (needsFunding && fundAmount > 0) {
+        const totalNeeded = wallets.length * fundAmount;
+        const currentBal = await connection.getBalance(masterKeypair.publicKey) / 1e9;
+        
+        if (currentBal < totalNeeded + 0.01) {
+            bot.sendMessage(chatId, `❌ *ABORTED:* Master Wallet insufficient funds!\n` + 
+                `Required: \`${totalNeeded.toFixed(4)}\` SOL | Available: \`${currentBal.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
+            return { success: false, error: 'Insufficient funds' };
+        }
+
         bot.sendMessage(chatId, `💰 Funding ${wallets.length} wallets...`, { parse_mode: 'Markdown' });
 
         let fundResult;
@@ -619,8 +628,16 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             );
         }
 
-        if (fundResult.failures > 0) bot.sendMessage(chatId, `⚠️ ${fundResult.failures} funding failures`, { parse_mode: 'Markdown' });
-        await sleep(3000);
+        if (fundResult.failures > 0) {
+            const failureTrigger = fundResult.successes === 0 || (fundResult.failures / wallets.length) > 0.5;
+            if (failureTrigger) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* Funding failed significantly (${fundResult.failures}/${wallets.length} failed).`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            } else {
+                bot.sendMessage(chatId, `⚠️ Warning: ${fundResult.failures} wallets failed to fund. Proceeding with remainder.`, { parse_mode: 'Markdown' });
+            }
+        }
+        await sleep(2000);
     }
 
     for (let cycle = 0; cycle < cycles && STATE.running && !isShuttingDown; cycle++) {
@@ -941,11 +958,30 @@ async function executeTrendingStrategy(chatId, connection) {
     const intensity = STATE.trendingIntensity;
     const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
 
+    if (!STATE.useWalletPool) {
+        const totalNeeded = (mode === 'WASH_TRADING' ? 1 : 
+                           mode === 'ORGANIC_GROWTH' ? Math.max(1, Math.floor(walletCount * 0.2)) : 
+                           mode === 'FOMO_WAVE' ? Math.max(1, Math.floor(walletCount * 0.4)) : 
+                           mode === 'LIQUIDITY_LADDER' ? Math.max(1, Math.floor(walletCount * 0.3)) : 
+                           walletCount) * STATE.fundAmountPerWallet;
+        const currentBal = await connection.getBalance(masterKeypair.publicKey) / 1e9;
+        if (currentBal < totalNeeded + 0.01) {
+            bot.sendMessage(chatId, `❌ *ABORTED:* Master Wallet insufficient funds for trending strategy!\n` + 
+                `Required: \`${totalNeeded.toFixed(4)}\` SOL | Available: \`${currentBal.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
+            return { success: false, error: 'Insufficient funds' };
+        }
+    }
+
     if (mode === 'VIRAL_PUMP') {
         const cycles = Math.floor(5 + intensity * 2);
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(walletCount) : [];
-        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-
+        if (!STATE.useWalletPool) {
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            if (fundResult.successes === 0) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* Viral Pump funding failed.`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            }
+        }
         for (let i = 0; i < cycles && STATE.running && !isShuttingDown; i++) {
             const freshWallets = STATE.useWalletPool ? fetchWallets(walletCount) : ephemWallets;
 
@@ -981,8 +1017,13 @@ async function executeTrendingStrategy(chatId, connection) {
         const cycles = Math.floor(10 + intensity);
         const poolSize = Math.max(1, Math.floor(walletCount * 0.2));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(poolSize) : [];
-        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-
+        if (!STATE.useWalletPool) {
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            if (fundResult.successes === 0) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* Organic Growth funding failed.`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            }
+        }
         for (let i = 0; i < cycles && STATE.running && !isShuttingDown; i++) {
             const randomWallets = STATE.useWalletPool ? fetchWallets(poolSize) : ephemWallets;
 
@@ -1020,8 +1061,13 @@ async function executeTrendingStrategy(chatId, connection) {
         const waves = Math.floor(2 + intensity * 0.5);
         const surgeSize = Math.max(1, Math.floor(walletCount * 0.4));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(surgeSize) : [];
-        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-
+        if (!STATE.useWalletPool) {
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            if (fundResult.successes === 0) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* FOMO Wave funding failed.`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            }
+        }
         for (let wave = 0; wave < waves && STATE.running && !isShuttingDown; wave++) {
             bot.sendMessage(chatId, `🌊 FOMO Wave ${wave + 1}/${waves} - Rapid buys!`, { parse_mode: 'Markdown' });
             const buysPerWave = Math.floor(3 + intensity);
@@ -1052,8 +1098,13 @@ async function executeTrendingStrategy(chatId, connection) {
         const steps = Math.floor(5 + intensity);
         const ladderSize = Math.max(1, Math.floor(walletCount * 0.3));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(ladderSize) : [];
-        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-
+        if (!STATE.useWalletPool) {
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            if (fundResult.successes === 0) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* Liquidity Ladder funding failed.`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            }
+        }
         for (let i = 0; i < steps && STATE.running && !isShuttingDown; i++) {
             const ladders = STATE.useWalletPool ? fetchWallets(ladderSize) : ephemWallets;
 
@@ -1076,8 +1127,13 @@ async function executeTrendingStrategy(chatId, connection) {
         bot.sendMessage(chatId, `🔄 Wash Trading: ${pairs} pairs`, { parse_mode: 'Markdown' });
 
         const ephemBuyers = !STATE.useWalletPool ? fetchWallets(1) : [];
-        if (!STATE.useWalletPool) await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-
+        if (!STATE.useWalletPool) {
+            const fundResult = await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            if (fundResult.successes === 0) {
+                bot.sendMessage(chatId, `❌ *ABORTED:* Wash Trading funding failed.`, { parse_mode: 'Markdown' });
+                return { success: false, error: 'Funding failed' };
+            }
+        }
         for (let i = 0; i < pairs && STATE.running && !isShuttingDown; i++) {
             const buyers = STATE.useWalletPool ? fetchWallets(1) : ephemBuyers;
             const sellers = STATE.useWalletPool ? fetchWallets(1) : buyers;

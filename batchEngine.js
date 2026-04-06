@@ -158,18 +158,17 @@ export class BatchSwapEngine {
                         // Execute the actual action
                         const result = await actionFn(wallet, actualIndex);
                         
-                        // Record result and count success
+                        // Record result
                         results[actualIndex] = result;
-                        if (result !== null && result !== undefined) {
-                            successes++;
-                        } else {
-                            // Null/undefined result may indicate skipped operation (not necessarily failure)
-                            // Count as success since it didn't error
-                            successes++;
-                        }
                         
-                        lastError = null;
-                        break; // Success - exit retry loop
+                        if (result) {
+                            successes++;
+                            lastError = null;
+                        } else {
+                            // If result is null/undefined, it's a failure (insufficient SOL, etc.)
+                            lastError = new Error('Operation returned empty result (likely insufficient funds or timeout)');
+                        }
+                        break; // Action completed (either successfully or with a handled failure)
                         
                     } catch (err) {
                         lastError = err;
