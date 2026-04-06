@@ -2168,7 +2168,8 @@ bot.on('callback_query', async (callbackQuery) => {
             if (val.toUpperCase() !== 'YES') return bot.sendMessage(chatId, `❌ Cancelled.`);
             await withRpcFallback(async (connection) => {
                 bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets...`);
-                const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+                // Manual funding should only check for shutdown, not if a strategy is "running"
+                const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown);
                 bot.sendMessage(chatId, `✅ Funding complete. ${result.successes} succeeded, ${result.failures} failed.`);
                 showWalletPoolMenu(chatId);
             });
@@ -2181,7 +2182,8 @@ bot.on('callback_query', async (callbackQuery) => {
             if (val.toUpperCase() !== 'YES') return bot.sendMessage(chatId, `❌ Cancelled.`);
             await withRpcFallback(async (connection) => {
                 bot.sendMessage(chatId, `🔄 Draining ${walletManager.size} wallets...`);
-                await walletManager.drainAll(connection, masterKeypair, sendSOL, STATE.batchConcurrency);
+                // Manual draining should only check for shutdown, not if a strategy is "running"
+                await walletManager.drainAll(connection, masterKeypair, sendSOL, STATE.batchConcurrency, null, () => !isShuttingDown);
                 showWalletPoolMenu(chatId);
             });
         });
