@@ -13,22 +13,6 @@ import bs58 from "bs58";
 import TelegramBot from "node-telegram-bot-api";
 import winston from 'winston';
 
-// Optional SolanaTrade provider (if installed)
-let SolanaTrade;
-try {
-    const stModule = await import("solana-trade");
-    // Handle both ESM and CJS exports robustly
-    SolanaTrade = stModule.SolanaTrade || stModule.default?.SolanaTrade || stModule.default;
-    if (SolanaTrade) {
-        logger?.info("✅ SolanaTrade provider initialized successfully");
-    } else {
-        throw new Error("SolanaTrade class not found in module exports");
-    }
-} catch (e) {
-    // Only warn during initialization; users might not have it installed or might not care unless they select it
-    logger?.warn(`⚠️ SolanaTrade provider failed to load: ${e.message}. Using SolanaTracker as fallback.`);
-}
-
 // Helper to map UI DEX names to SolanaTrade market identifiers
 function mapMarket(targetDex) {
     if (!targetDex) return "RAYDIUM_AMM";
@@ -140,6 +124,22 @@ const logger = winston.createLogger({
         new winston.transports.Console()
     ]
 });
+
+// Optional SolanaTrade provider (if installed)
+let SolanaTrade;
+try {
+    const stModule = await import("solana-trade");
+    // Handle both ESM and CJS exports robustly
+    SolanaTrade = stModule.SolanaTrade || stModule.default?.SolanaTrade || stModule.default;
+    if (SolanaTrade) {
+        logger.info("✅ SolanaTrade provider initialized successfully");
+    } else {
+        throw new Error("SolanaTrade class not found in module exports");
+    }
+} catch (e) {
+    // Standard initialization warning
+    logger.warn(`⚠️ SolanaTrade provider failed to load: ${e.message}. Using SolanaTracker as fallback.`);
+}
 
 // ─────────────────────────────────────────────
 // 🌐 RPC Fallback with Exponential Backoff
