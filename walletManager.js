@@ -267,9 +267,9 @@ export class WalletPool {
                         
                         if (isRetryable && attempt < maxRetries) {
                             // Exponential backoff with jitter
-                            const baseDelay = 500 * Math.pow(2, attempt);
-                            const jitter = baseDelay * 0.1 * Math.random();
-                            const delay = Math.min(baseDelay + jitter, 3000);
+                            const baseDelay = 1000 * Math.pow(2, attempt);
+                            const jitter = baseDelay * 0.2 * Math.random();
+                            const delay = Math.min(baseDelay + jitter, 5000);
                             console.debug(`[WalletPool] Item ${currentIndex} retry ${attempt+1}/${maxRetries} in ${Math.round(delay)}ms: ${err.message}`);
                             await new Promise(r => setTimeout(r, delay));
                             continue;
@@ -465,8 +465,9 @@ export class WalletPool {
             return { completed: 0, successes: 0, failures: 0 };
         }
 
-        const MIN_RENT = 5000; // Lamports to leave for rent exemption
-        const MIN_DRAIN = 10000; // Minimum balance to trigger drain
+        const MIN_RENT = 1100000; // ~0.0011 SOL for rent-exemption + safety margin
+        const MIN_DRAIN = 100000; // ~0.0001 SOL minimum balance to justify draining fee
+        const TX_FEE = 10000;    // Standard SOL transfer fee (with safety buffer)
 
         console.log(`[WalletPool] Draining ${this.wallets.length} wallets to ${masterKeypair.publicKey.toBase58().slice(0,8)}...`);
 
@@ -475,14 +476,48 @@ export class WalletPool {
             async (wallet) => {
                 const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
                 if (bal > MIN_RENT + MIN_DRAIN) {
-                    const drainAmount = (bal - MIN_RENT) / LAMPORTS_PER_SOL;
-                    await sendSOLFn(connection, wallet, masterKeypair.publicKey, drainAmount);
+                    const drainAmount = (bal - MIN_RENT - TX_FEE) / LAMPORTS_PER_SOL;
+                    if (drainAmount > 0) {
+                        await sendSOLFn(connection, wallet, masterKeypair.publicKey, drainAmount);
+                    }
                 }
             },
             concurrency,
             progressCb,
             checkRunning,
-            3 // maxRetries: higher for drain since network errors are common
+            3
+        );
+    }
+
+    /**
+     * Drain a specific array of wallets back to the master wallet.
+     * 
+     * @param {Keypair[]} wallets - Array of wallets to drain
+     * @param {Object} options - Drain options
+     * @returns {Promise<{completed, successes, failures}>}
+     */
+    async drainWallets(wallets, { connection, masterKeypair, sendSOLFn, concurrency = 10, progressCb = null, checkRunning = null }) {
+        if (!wallets || !wallets.length) return { completed: 0, successes: 0, failures: 0 };
+
+        const MIN_RENT = 1100000; 
+        const MIN_DRAIN = 100000;
+        const TX_FEE = 10000;
+
+        return await this._batchExecute(
+            wallets,
+            async (wallet) => {
+                const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
+                if (bal > MIN_RENT + MIN_DRAIN) {
+                    const drainAmount = (bal - MIN_RENT - TX_FEE) / LAMPORTS_PER_SOL;
+                    if (drainAmount > 0) {
+                        await sendSOLFn(connection, wallet, masterKeypair.publicKey, drainAmount);
+                    }
+                }
+            },
+            concurrency,
+            progressCb,
+            checkRunning,
+            3
         );
     }
 
@@ -512,7 +547,8 @@ export class WalletPool {
                     const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
                     balances[i] = bal;
                     totalLamports += bal;
-                    if (bal > 10000) funded++;
+                    // A wallet is only considered "funded" if it can actually perform a trade (>= MIN_RENT)
+                    if (bal >= 1100000) funded++;
                     else empty++;
                 } catch {
                     empty++;
@@ -746,51 +782,8 @@ export class WalletPool {
      * Check if wallet pool is ephemeral (always returns false for persistent pool)
      * @returns {boolean}
      */
-    isEphemeral() {
+    get isEphemeral() {
         return false;
-    }
-
-    /**
-     * Drain specific wallets back to master wallet
-     * @param {Keypair[]} wallets - Array of wallets to drain
-     * @param {Object} options - Options object
-     * @param {Object} options.connection - Solana connection
-     * @param {Keypair} options.masterKeypair - Master wallet to drain to
-     * @param {Function} options.sendSOLFn - Function to send SOL
-     * @param {number} options.concurrency - Max parallel operations
-     * @returns {Promise<{successes, failures}>}
-     */
-    async drainWallets(wallets, { connection, masterKeypair, sendSOLFn, concurrency = 10 }) {
-        if (!wallets || !wallets.length) {
-            console.log(`[WalletPool] drainWallets: no wallets to drain`);
-            return { successes: 0, failures: 0 };
-        }
-
-        if (!masterKeypair) {
-            console.error(`[WalletPool] drainWallets: masterKeypair not provided`);
-            return { successes: 0, failures: 0 };
-        }
-
-        const MIN_RENT = 5000;
-        const MIN_DRAIN = 10000;
-
-        console.log(`[WalletPool] Draining ${wallets.length} wallets to ${masterKeypair.publicKey.toBase58().slice(0, 8)}...`);
-
-        return await this._batchExecute(
-            wallets,
-            async (wallet) => {
-                const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
-                if (bal > MIN_RENT + MIN_DRAIN) {
-                    const drainAmount = (bal - MIN_RENT) / LAMPORTS_PER_SOL;
-                    await sendSOLFn(connection, wallet, masterKeypair.publicKey, drainAmount);
-                    console.log(`[WalletPool] Drained ${drainAmount.toFixed(4)} SOL from ${wallet.publicKey.toBase58().slice(0, 8)}...`);
-                }
-            },
-            concurrency,
-            null,
-            null,
-            3 // maxRetries: higher for drain since network errors are common
-        );
     }
 }
 

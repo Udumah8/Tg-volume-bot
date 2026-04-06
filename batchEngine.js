@@ -178,9 +178,9 @@ export class BatchSwapEngine {
                         
                         if (isRetryable && attempt < maxRetries) {
                             // Exponential backoff with jitter for retry delays
-                            const baseDelay = 500 * Math.pow(2, attempt);
-                            const jitter = baseDelay * 0.1 * Math.random();
-                            const delay = Math.min(baseDelay + jitter, 3000);
+                            const baseDelay = 1000 * Math.pow(2, attempt);
+                            const jitter = baseDelay * 0.2 * Math.random();
+                            const delay = Math.min(baseDelay + jitter, 5000);
                             
                             console.debug(
                                 `[BatchEngine] Wallet ${actualIndex} (${walletKey.slice(0,8)}...) ` +

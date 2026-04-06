@@ -445,14 +445,15 @@ async function withStrategyLock(strategyName, fn, chatId) {
 // ─────────────────────────────────────────────
 async function sendSOL(connection, from, to, amountSOL) {
     const balance = await connection.getBalance(from.publicKey);
-    const roundedAmount = parseFloat(amountSOL.toFixed(6)); // Fix floating-point precision
-    const lamportsNeeded = Math.floor(roundedAmount * LAMPORTS_PER_SOL) + 10000;
-    if (balance < lamportsNeeded) {
-        throw new Error(`Insufficient balance: ${(balance / LAMPORTS_PER_SOL).toFixed(6)} SOL < ${(roundedAmount + 0.00001).toFixed(6)} SOL needed`);
+    const lamports = Math.round(amountSOL * LAMPORTS_PER_SOL);
+    const lamportsWithFee = lamports + 10000; // Buffer for tx fee
+
+    if (balance < lamportsWithFee) {
+        throw new Error(`Insufficient balance: ${(balance / LAMPORTS_PER_SOL).toFixed(6)} SOL < ${((lamportsWithFee) / LAMPORTS_PER_SOL).toFixed(6)} SOL needed`);
     }
 
     const tx = new Transaction().add(
-        SystemProgram.transfer({ fromPubkey: from.publicKey, toPubkey: to, lamports: Math.floor(roundedAmount * LAMPORTS_PER_SOL) })
+        SystemProgram.transfer({ fromPubkey: from.publicKey, toPubkey: to, lamports })
     );
 
     if (STATE.useJito) {
@@ -514,9 +515,10 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
 
             const isBuy = tokenIn === SOL_ADDR;
             if (isBuy && cleanAmount !== 'auto') {
-                const requiredSol = cleanAmount + (cleanAmount * STATE.slippage / 100) + STATE.priorityFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.00001;
+                // Buffer (0.0012 SOL) to ensure balance stays above rent-exemption (1,100,000 lamports)
+                const requiredSol = cleanAmount + (cleanAmount * STATE.slippage / 100) + STATE.priorityFee + (STATE.useJito ? STATE.jitoTipAmount : 0) + 0.0012;
                 const balance = await connection.getBalance(keypair.publicKey) / LAMPORTS_PER_SOL;
-                if (balance < requiredSol) throw new Error(`Insufficient SOL: ${balance.toFixed(6)} < ${requiredSol.toFixed(6)} needed`);
+                if (balance < requiredSol) throw new Error(`Insufficient SOL: ${balance.toFixed(6)} < ${requiredSol.toFixed(6)} needed (including rent safety)`);
             }
 
             const currentSlippage = getDynamicSlippage(STATE.slippage);
@@ -562,7 +564,8 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
                 e.message?.includes('Insufficient SOL') ||
                 e.message?.includes('Insufficient balance') ||
                 e.message?.includes('Invalid amount') ||
-                e.message?.includes('Invalid token address') ||
+                e.message?.includes('Simulation failed') ||
+                e.message?.includes('insufficient funds for rent') ||
                 e.message?.includes('Account not found');
 
             if (isNonRetryable) {
