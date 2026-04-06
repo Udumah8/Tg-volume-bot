@@ -465,9 +465,9 @@ export class WalletPool {
             return { completed: 0, successes: 0, failures: 0 };
         }
 
-        const MIN_RENT = 1000000; // ~0.001 SOL (Base account rent floor for draining)
-        const MIN_DRAIN = 100000; // ~0.0001 SOL minimum balance to justify draining fee
-        const TX_FEE = 10000;    // Standard SOL transfer fee (with safety buffer)
+        const MIN_RENT = 0; // ~0 SOL (Deep sweep to reclaim all funds)
+        const MIN_DRAIN = 0; // ~0 SOL (Allow deep sweep of tiny amounts)
+        const TX_FEE = 5000;      // Exact standard Solana transfer fee (to hit zero exactly)
 
         console.log(`[WalletPool] Draining ${this.wallets.length} wallets to ${masterKeypair.publicKey.toBase58().slice(0,8)}...`);
 
@@ -499,9 +499,9 @@ export class WalletPool {
     async drainWallets(wallets, { connection, masterKeypair, sendSOLFn, concurrency = 10, progressCb = null, checkRunning = null }) {
         if (!wallets || !wallets.length) return { completed: 0, successes: 0, failures: 0 };
 
-        const MIN_RENT = 1000000; 
-        const MIN_DRAIN = 100000;
-        const TX_FEE = 10000;
+        const MIN_RENT = 0; 
+        const MIN_DRAIN = 0; 
+        const TX_FEE = 5000;
 
         return await this._batchExecute(
             wallets,
