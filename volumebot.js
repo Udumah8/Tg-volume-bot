@@ -888,7 +888,7 @@ async function executeChartPattern(chatId, connection) {
 async function executeHolderGrowth(chatId, connection) {
     const count = STATE.useWalletPool ? Math.min(STATE.holderWallets, walletManager.size) : STATE.holderWallets;
     return executeStrategyTemplate(chatId, connection, {
-        name: 'Holder Growth', walletCount: count, fundAmount: STATE.holderBuyAmount + 0.003,
+        name: 'Holder Growth', walletCount: count, fundAmount: STATE.holderBuyAmount + 0.005,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
             const amtVariation = getRandomFloat(STATE.holderBuyAmount * 0.7, STATE.holderBuyAmount * 1.3);
             return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amtVariation, cid, true);
@@ -979,7 +979,7 @@ async function executeTrendingStrategy(chatId, connection) {
         const cycles = Math.floor(5 + intensity * 2);
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(walletCount) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Viral Pump funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1021,7 +1021,7 @@ async function executeTrendingStrategy(chatId, connection) {
         const poolSize = Math.max(1, Math.floor(walletCount * 0.2));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(poolSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Organic Growth funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1065,7 +1065,7 @@ async function executeTrendingStrategy(chatId, connection) {
         const surgeSize = Math.max(1, Math.floor(walletCount * 0.4));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(surgeSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* FOMO Wave funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1102,7 +1102,7 @@ async function executeTrendingStrategy(chatId, connection) {
         const ladderSize = Math.max(1, Math.floor(walletCount * 0.3));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(ladderSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Liquidity Ladder funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1131,7 +1131,7 @@ async function executeTrendingStrategy(chatId, connection) {
 
         const ephemBuyers = !STATE.useWalletPool ? fetchWallets(1) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
+            const fundResult = await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Wash Trading funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1302,7 +1302,7 @@ async function executeLadderStrategy(chatId, connection) {
     return executeStrategyTemplate(chatId, connection, {
         name: "LADDER",
         walletCount: STATE.walletsPerCycle,
-        fundAmount: STATE.fundAmountPerWallet,
+        fundAmount: STATE.fundAmountPerWallet * 2,
         cycles: STATE.numberOfCycles,
         needsFunding: true,
         buyLogic: async (wallet, idx, volMult) => {
