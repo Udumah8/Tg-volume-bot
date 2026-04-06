@@ -446,7 +446,7 @@ async function withStrategyLock(strategyName, fn, chatId) {
 async function sendSOL(connection, from, to, amountSOL) {
     const balance = await connection.getBalance(from.publicKey);
     const lamports = Math.round(amountSOL * LAMPORTS_PER_SOL);
-    const lamportsWithFee = lamports + 10000; // Buffer for tx fee
+    const lamportsWithFee = lamports + 5000; // Exact Solana transfer fee
 
     if (balance < lamportsWithFee) {
         throw new Error(`Insufficient balance: ${(balance / LAMPORTS_PER_SOL).toFixed(6)} SOL < ${((lamportsWithFee) / LAMPORTS_PER_SOL).toFixed(6)} SOL needed`);
