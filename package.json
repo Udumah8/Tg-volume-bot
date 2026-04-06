@@ -13,7 +13,7 @@
   "dependencies": {
     "@jup-ag/core": "^4.0.0-beta.21",
     "@solana/spl-token": "^0.4.14",
-    "@solana/web3.js": "^1.95.2",
+    "@solana/web3.js": "1.98.4",
     "axios": "^1.7.2",
     "better-sqlite3": "^12.8.0",
     "borsh": "^2.0.0",
@@ -27,7 +27,8 @@
     "winston": "^3.19.0"
   },
   "overrides": {
-    "@coral-xyz/anchor": "0.29.0"
+    "@coral-xyz/anchor": "0.29.0",
+    "@solana/web3.js": "1.98.4"
   },
   "devDependencies": {
     "chai": "^6.2.2",
