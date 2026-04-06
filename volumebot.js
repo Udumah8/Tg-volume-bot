@@ -765,9 +765,16 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
         const totalNeeded = wallets.length * fundAmount;
         const currentBal = await connection.getBalance(masterKeypair.publicKey) / 1e9;
         
-        if (currentBal < totalNeeded + 0.01) {
+        // For ephemeral wallets, we need less buffer since SOL gets drained back
+        // For persistent pool, we need more buffer since SOL stays in wallets
+        const bufferNeeded = isEphemeral ? 0.002 : 0.01;
+        const requiredBalance = totalNeeded + bufferNeeded;
+        
+        if (currentBal < requiredBalance) {
             bot.sendMessage(chatId, `❌ *ABORTED:* Master Wallet insufficient funds!\n` + 
-                `Required: \`${totalNeeded.toFixed(4)}\` SOL | Available: \`${currentBal.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
+                `Required: \`${requiredBalance.toFixed(4)}\` SOL (${totalNeeded.toFixed(4)} + ${bufferNeeded.toFixed(4)} buffer)\n` +
+                `Available: \`${currentBal.toFixed(4)}\` SOL\n` +
+                `${isEphemeral ? '💡 Tip: Ephemeral mode will drain SOL back after completion' : ''}`, { parse_mode: 'Markdown' });
             return { success: false, error: 'Insufficient funds' };
         }
 
@@ -1166,9 +1173,16 @@ async function executeTrendingStrategy(chatId, connection) {
                            mode === 'LIQUIDITY_LADDER' ? Math.max(1, Math.floor(walletCount * 0.3)) : 
                            walletCount) * STATE.fundAmountPerWallet;
         const currentBal = await connection.getBalance(masterKeypair.publicKey) / 1e9;
-        if (currentBal < totalNeeded + 0.01) {
+        
+        // Ephemeral wallets get drained back, so we need less buffer
+        const bufferNeeded = 0.002;
+        const requiredBalance = totalNeeded + bufferNeeded;
+        
+        if (currentBal < requiredBalance) {
             bot.sendMessage(chatId, `❌ *ABORTED:* Master Wallet insufficient funds for trending strategy!\n` + 
-                `Required: \`${totalNeeded.toFixed(4)}\` SOL | Available: \`${currentBal.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
+                `Required: \`${requiredBalance.toFixed(4)}\` SOL (${totalNeeded.toFixed(4)} + ${bufferNeeded.toFixed(4)} buffer)\n` +
+                `Available: \`${currentBal.toFixed(4)}\` SOL\n` +
+                `💡 Tip: Ephemeral mode will drain SOL back after completion`, { parse_mode: 'Markdown' });
             return { success: false, error: 'Insufficient funds' };
         }
     }
