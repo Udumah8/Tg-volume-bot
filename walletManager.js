@@ -24,6 +24,8 @@ const WALLETS_BACKUP = path.join(__dirname, "wallets.backup.json");
  * - Progress callbacks for UI updates
  * - Cancellation support via checkRunning callback
  * - Memory-efficient random subset selection
+ * - Automatic backup and recovery
+ * - PublicKey index for O(1) lookups
  */
 export class WalletPool {
     constructor() {
@@ -31,6 +33,10 @@ export class WalletPool {
         this.wallets = [];
         /** @type {Map<string, Keypair>} */
         this.publicKeyMap = new Map();
+        /** @type {number} Last save timestamp for debouncing */
+        this._lastSaveTime = 0;
+        /** @type {number} Minimum ms between saves */
+        this._saveDebounceMs = 1000;
         this._load();
     }
 
@@ -79,9 +85,18 @@ export class WalletPool {
 
     /**
      * Save wallets to disk with atomic write (temp file + rename)
+     * Includes debouncing to prevent excessive disk I/O
      */
-    _save() {
+    _save(force = false) {
         try {
+            // Debounce saves unless forced
+            const now = Date.now();
+            if (!force && (now - this._lastSaveTime) < this._saveDebounceMs) {
+                console.debug(`[WalletPool] Save debounced (${now - this._lastSaveTime}ms since last save)`);
+                return;
+            }
+            this._lastSaveTime = now;
+            
             const data = this.wallets.map(kp => ({
                 publicKey: kp.publicKey.toBase58(),
                 secretKey: bs58.encode(kp.secretKey)

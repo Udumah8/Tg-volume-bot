@@ -534,6 +534,7 @@ export class BatchSwapEngine {
 
     /**
      * Determine if an error is retryable (transient network/RPC issue)
+     * Enhanced with more comprehensive error detection
      * @param {Error} err - The error to evaluate
      * @returns {boolean} True if error should trigger retry
      */
@@ -547,11 +548,14 @@ export class BatchSwapEngine {
         if (message.includes('timeout') || 
             message.includes('timed out') ||
             message.includes('fetch failed') ||
+            message.includes('network request failed') ||
             code === 'etimedout' ||
             code === 'econnreset' ||
             code === 'econnrefused' ||
             code === 'enotfound' ||
             code === 'eai_again' ||
+            code === 'enetunreach' ||
+            code === 'ehostunreach' ||
             code === 'und_err_connect_timeout') {
             return true;
         }
@@ -569,18 +573,31 @@ export class BatchSwapEngine {
             message.includes('transaction was not confirmed') ||
             message.includes('failed to get') ||
             message.includes('node is behind') ||
-            message.includes('slot not available')) {
+            message.includes('slot not available') ||
+            message.includes('block not available') ||
+            message.includes('transaction simulation failed') && !message.includes('insufficient')) {
             return true;
         }
         
         // RPC response errors that may be transient
         if (message.includes('send transaction error') ||
             message.includes('connection refused') ||
-            message.includes('network error')) {
+            message.includes('network error') ||
+            message.includes('internal error') ||
+            message.includes('service unavailable')) {
             return true;
         }
         
-        // Default: not retryable
+        // Non-retryable errors (explicit check)
+        if (message.includes('insufficient') ||
+            message.includes('invalid') ||
+            message.includes('not found') && !message.includes('blockhash') ||
+            message.includes('unauthorized') ||
+            message.includes('forbidden')) {
+            return false;
+        }
+        
+        // Default: not retryable (conservative approach)
         return false;
     }
 

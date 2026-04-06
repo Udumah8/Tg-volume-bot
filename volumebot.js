@@ -484,6 +484,55 @@ async function withStrategyLock(strategyName, fn, chatId) {
     finally { activeStrategy = null; }
 }
 
+/**
+ * Health check function to verify system readiness
+ * @returns {Promise<{healthy: boolean, issues: string[]}>}
+ */
+async function performHealthCheck() {
+    const issues = [];
+    
+    // Check master wallet
+    if (!masterKeypair) {
+        issues.push('Master wallet not loaded');
+    }
+    
+    // Check token address
+    if (!STATE.tokenAddress) {
+        issues.push('Token address not set');
+    }
+    
+    // Check RPC connectivity
+    try {
+        const connection = getConnection();
+        await connection.getSlot();
+    } catch (e) {
+        issues.push(`RPC connection failed: ${e.message}`);
+    }
+    
+    // Check wallet pool
+    if (STATE.useWalletPool && walletManager.size === 0) {
+        issues.push('Wallet pool is empty');
+    }
+    
+    // Check master wallet balance
+    if (masterKeypair) {
+        try {
+            const connection = getConnection();
+            const balance = await connection.getBalance(masterKeypair.publicKey) / LAMPORTS_PER_SOL;
+            if (balance < 0.01) {
+                issues.push(`Master wallet balance low: ${balance.toFixed(4)} SOL`);
+            }
+        } catch (e) {
+            issues.push(`Failed to check master wallet balance: ${e.message}`);
+        }
+    }
+    
+    return {
+        healthy: issues.length === 0,
+        issues
+    };
+}
+
 // ─────────────────────────────────────────────
 // 💸 SOL Transfer with Balance Check
 // ─────────────────────────────────────────────
@@ -563,6 +612,7 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
             const currentSlippage = getDynamicSlippage(STATE.slippage);
             const currentFee = getDynamicFee(STATE.priorityFee);
             
+            // Enhanced balance validation with detailed error messages
             if (isBuy && cleanAmount !== 'auto') {
                 // For BUYS: Calculate required SOL with proper buffer
                 // Base amount + slippage buffer + priority fee + jito tip (if enabled) + rent buffer (0.002 SOL)
