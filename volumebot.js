@@ -2550,15 +2550,36 @@ bot.on('callback_query', async (callbackQuery) => {
             }
             
             const walletsToSeason = walletManager.getRandomSubset(Math.min(count, walletManager.size));
-            bot.sendMessage(chatId, `🌱 Seasoning ${walletsToSeason.length} wallets...`);
             
             try {
                 const connection = getConnection();
                 
-                // Fund wallets first (need SOL for seasoning activities)
+                // Check master wallet balance first
+                const masterBalance = await connection.getBalance(masterKeypair.publicKey) / LAMPORTS_PER_SOL;
                 const fundAmount = 0.01; // 0.01 SOL per wallet for seasoning
-                bot.sendMessage(chatId, `💰 Funding ${walletsToSeason.length} wallets with ${fundAmount} SOL each...`);
+                const totalNeeded = walletsToSeason.length * fundAmount + 0.01; // +0.01 buffer
                 
+                if (masterBalance < totalNeeded) {
+                    return bot.sendMessage(chatId, 
+                        `❌ *Insufficient Master Wallet Balance*\n\n` +
+                        `Required: \`${totalNeeded.toFixed(4)}\` SOL\n` +
+                        `Available: \`${masterBalance.toFixed(4)}\` SOL\n` +
+                        `Shortage: \`${(totalNeeded - masterBalance).toFixed(4)}\` SOL\n\n` +
+                        `Please fund your master wallet first.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
+                
+                bot.sendMessage(chatId, 
+                    `🌱 *Starting Wallet Seasoning*\n\n` +
+                    `Wallets: ${walletsToSeason.length}\n` +
+                    `Fund Amount: ${fundAmount} SOL each\n` +
+                    `Total Cost: ~${totalNeeded.toFixed(4)} SOL\n\n` +
+                    `Step 1/3: Funding wallets...`,
+                    { parse_mode: 'Markdown' }
+                );
+                
+                // Fund wallets (no checkRunning - this is a manual operation)
                 const fundResult = await walletManager.fundWallets(walletsToSeason, {
                     connection,
                     masterKeypair,
@@ -2566,18 +2587,44 @@ bot.on('callback_query', async (callbackQuery) => {
                     amountSOL: fundAmount,
                     concurrency: STATE.batchConcurrency,
                     progressCb: (prog) => {
-                        if (prog.successes % 10 === 0) {
-                            bot.sendMessage(chatId, `💰 Funded: ${prog.successes}/${prog.total}`).catch(() => {});
+                        if (prog.successes % 5 === 0 || prog.successes === prog.total) {
+                            bot.sendMessage(chatId, `💰 Funding: ${prog.successes}/${prog.total} (${Math.round((prog.successes/prog.total)*100)}%)`).catch(() => {});
                         }
                     },
-                    checkRunning: () => STATE.running && !isShuttingDown
+                    checkRunning: () => true // Always continue for manual seasoning
                 });
                 
-                if (fundResult.failures > walletsToSeason.length / 2) {
-                    return bot.sendMessage(chatId, `❌ Funding failed for most wallets (${fundResult.failures}/${walletsToSeason.length}). Aborting seasoning.`);
+                if (fundResult.successes === 0) {
+                    return bot.sendMessage(chatId, 
+                        `❌ *Funding Failed*\n\n` +
+                        `All ${walletsToSeason.length} wallets failed to fund.\n` +
+                        `This might be due to:\n` +
+                        `• RPC connection issues\n` +
+                        `• Network congestion\n` +
+                        `• Insufficient master wallet balance\n\n` +
+                        `Please try again.`,
+                        { parse_mode: 'Markdown' }
+                    );
                 }
                 
-                bot.sendMessage(chatId, `✅ Funded ${fundResult.successes} wallets. Starting seasoning...`);
+                if (fundResult.failures > walletsToSeason.length / 2) {
+                    return bot.sendMessage(chatId, 
+                        `⚠️ *Partial Funding Failure*\n\n` +
+                        `Funded: ${fundResult.successes}/${walletsToSeason.length}\n` +
+                        `Failed: ${fundResult.failures}\n\n` +
+                        `Too many failures. Aborting seasoning.\n` +
+                        `Try reducing wallet count or checking RPC.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
+                
+                bot.sendMessage(chatId, 
+                    `✅ *Funding Complete*\n\n` +
+                    `Funded: ${fundResult.successes}/${walletsToSeason.length}\n` +
+                    `Failed: ${fundResult.failures}\n\n` +
+                    `Step 2/3: Seasoning wallets...`,
+                    { parse_mode: 'Markdown' }
+                );
                 
                 // Now season the wallets with liquid tokens (USDC/USDT)
                 const result = await SeasoningEngine.quickSeason(
@@ -2594,32 +2641,64 @@ bot.on('callback_query', async (callbackQuery) => {
                         maxAmount: 0.005,
                         useLiquidTokens: true, // Use USDC/USDT/mSOL/stSOL for reliable swaps
                         progressCb: (progress) => {
-                            if (progress.completed % 10 === 0) {
-                                bot.sendMessage(chatId, `🌱 Progress: ${progress.percent}%`).catch(() => {});
+                            if (progress.completed % 5 === 0 || progress.completed === progress.total) {
+                                bot.sendMessage(chatId, `🌱 Seasoning: ${progress.completed}/${progress.total} (${progress.percent}%)`).catch(() => {});
                             }
                         }
                     }
                 );
                 
+                bot.sendMessage(chatId, 
+                    `✅ *Seasoning Complete*\n\n` +
+                    `Activities: ${result.successes}/${result.total}\n` +
+                    `Success Rate: ${Math.round((result.successes / result.total) * 100)}%\n\n` +
+                    `Step 3/3: Draining remaining SOL...`,
+                    { parse_mode: 'Markdown' }
+                );
+                
                 // Drain remaining SOL back to master
-                bot.sendMessage(chatId, `🔄 Draining remaining SOL from wallets...`);
-                await walletManager.drainWallets(walletsToSeason, {
+                const drainResult = await walletManager.drainWallets(walletsToSeason, {
                     connection,
                     masterKeypair,
                     sendSOLFn: sendSOL,
-                    concurrency: STATE.batchConcurrency
+                    concurrency: STATE.batchConcurrency,
+                    progressCb: (prog) => {
+                        if (prog.successes % 5 === 0 || prog.successes === prog.total) {
+                            bot.sendMessage(chatId, `🔄 Draining: ${prog.successes}/${prog.total} (${Math.round((prog.successes/prog.total)*100)}%)`).catch(() => {});
+                        }
+                    }
                 });
                 
+                // Calculate recovered SOL
+                const recovered = drainResult.totalRecovered || 0;
+                const netCost = (walletsToSeason.length * fundAmount) - recovered;
+                
                 bot.sendMessage(chatId, 
-                    `✅ *Seasoning Complete!*\n` +
-                    `Wallets: ${walletsToSeason.length}\n` +
+                    `🎉 *Wallet Seasoning Complete!*\n\n` +
+                    `*Results:*\n` +
+                    `Wallets Seasoned: ${walletsToSeason.length}\n` +
                     `Activities: ${result.successes}/${result.total}\n` +
-                    `Success Rate: ${Math.round((result.successes / result.total) * 100)}%`,
+                    `Success Rate: ${Math.round((result.successes / result.total) * 100)}%\n\n` +
+                    `*Cost Analysis:*\n` +
+                    `Funded: ${(walletsToSeason.length * fundAmount).toFixed(4)} SOL\n` +
+                    `Recovered: ${recovered.toFixed(4)} SOL\n` +
+                    `Net Cost: ${netCost.toFixed(4)} SOL\n\n` +
+                    `Your wallets now have organic trading history! 🌱`,
                     { parse_mode: 'Markdown' }
                 );
             } catch (error) {
                 logger.error(`Seasoning failed: ${error.message}`);
-                bot.sendMessage(chatId, `❌ Seasoning failed: ${error.message}`);
+                bot.sendMessage(chatId, 
+                    `❌ *Seasoning Failed*\n\n` +
+                    `Error: ${error.message}\n\n` +
+                    `This might be due to:\n` +
+                    `• RPC connection issues\n` +
+                    `• Network congestion\n` +
+                    `• Token liquidity issues\n` +
+                    `• Insufficient wallet balances\n\n` +
+                    `Please check logs and try again.`,
+                    { parse_mode: 'Markdown' }
+                );
             }
         });
     }
