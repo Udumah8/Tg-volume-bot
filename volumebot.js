@@ -757,7 +757,15 @@ function fetchWallets(count) {
 async function executeStrategyTemplate(chatId, connection, strategyConfig) {
     const { name, walletCount, fundAmount, buyLogic, sellLogic, cycles, needsFunding = true, autoDrain = true } = strategyConfig;
 
-    bot.sendMessage(chatId, `🚀 Starting *${name}...*`, { parse_mode: 'Markdown' });
+    // Enhanced strategy start message
+    bot.sendMessage(chatId, formatStrategyStart(name, {
+        wallets: walletCount,
+        cycles: cycles,
+        amount: `${STATE.minBuyAmount}-${STATE.maxBuyAmount} SOL`,
+        mode: STATE.useWalletPool ? 'Pool' : 'Ephemeral',
+        token: STATE.tokenAddress
+    }), { parse_mode: 'Markdown' });
+    
     globalWalletManager = walletManager;
 
     const wallets = fetchWallets(walletCount);
@@ -786,26 +794,31 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
         const requiredBalance = totalNeeded + bufferNeeded;
         
         if (currentBal < requiredBalance) {
-            bot.sendMessage(chatId, `❌ *ABORTED:* Master Wallet insufficient funds!\n` + 
-                `Required: \`${requiredBalance.toFixed(4)}\` SOL (${totalNeeded.toFixed(4)} + ${bufferNeeded.toFixed(4)} buffer)\n` +
-                `Available: \`${currentBal.toFixed(4)}\` SOL\n` +
-                `${isEphemeral ? '💡 Tip: Ephemeral mode will drain SOL back after completion' : ''}`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, formatErrorMessage(
+                'Insufficient Master Wallet Balance',
+                `Need ${requiredBalance.toFixed(4)} SOL but only have ${currentBal.toFixed(4)} SOL`,
+                [
+                    `Fund master wallet with ${(requiredBalance - currentBal).toFixed(4)} SOL`,
+                    'Reduce wallet count or buy amount',
+                    isEphemeral ? 'Ephemeral mode uses less SOL (0.002 buffer)' : 'Switch to ephemeral mode to reduce buffer'
+                ]
+            ), { parse_mode: 'Markdown' });
             return { success: false, error: 'Insufficient funds' };
         }
 
-        bot.sendMessage(chatId, `💰 Funding ${wallets.length} wallets...`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `💰 *Funding ${wallets.length} Wallets*\n\nAmount: \`${fundAmount}\` SOL each\nTotal: \`${totalNeeded.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
 
         let fundResult;
         if (isEphemeral) {
             fundResult = await walletManager.fundWallets(wallets, {
                 connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: fundAmount, concurrency: STATE.batchConcurrency,
-                progressCb: (prog) => bot.sendMessage(chatId, `💰 Progress: ${prog.successes}/${prog.total}`, { parse_mode: 'Markdown' }).catch(() => { }),
+                progressCb: (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 checkRunning: () => STATE.running && !isShuttingDown
             });
         } else {
             fundResult = await walletManager.fundAll(
                 connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
-                (prog) => bot.sendMessage(chatId, `💰 Progress: ${prog.successes}/${prog.total}`, { parse_mode: 'Markdown' }).catch(() => { }),
+                (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 () => STATE.running && !isShuttingDown
             );
         }
@@ -813,11 +826,25 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
         if (fundResult.failures > 0) {
             const failureTrigger = fundResult.successes === 0 || (fundResult.failures / wallets.length) > 0.5;
             if (failureTrigger) {
-                bot.sendMessage(chatId, `❌ *ABORTED:* Funding failed significantly (${fundResult.failures}/${wallets.length} failed).`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, formatErrorMessage(
+                    'Funding Failed',
+                    `${fundResult.failures}/${wallets.length} wallets failed to fund`,
+                    [
+                        'Check master wallet balance',
+                        'Verify RPC connection',
+                        'Try reducing wallet count',
+                        'Check network congestion'
+                    ]
+                ), { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
             } else {
-                bot.sendMessage(chatId, `⚠️ Warning: ${fundResult.failures} wallets failed to fund. Proceeding with remainder.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, `⚠️ *Partial Funding*\n\nFunded: \`${fundResult.successes}/${wallets.length}\`\nFailed: \`${fundResult.failures}\`\n\nProceeding with funded wallets...`, { parse_mode: 'Markdown' });
             }
+        } else {
+            bot.sendMessage(chatId, formatSuccessMessage('Funding Complete', {
+                'Funded': `${fundResult.successes}/${wallets.length}`,
+                'Total': `${(fundResult.successes * fundAmount).toFixed(4)} SOL`
+            }), { parse_mode: 'Markdown' });
         }
         await sleep(2000);
     }
@@ -1870,6 +1897,69 @@ async function startEngine(chatId) {
         clearInterval(smartSellInterval);
         smartSellInterval = null;
     }
+}
+
+// ======================== MESSAGE FORMATTING HELPERS ========================
+
+/**
+ * Format a success message with consistent styling
+ */
+function formatSuccessMessage(title, details = {}) {
+    let message = `✅ *${title}*\n\n`;
+    for (const [key, value] of Object.entries(details)) {
+        message += `${key}: \`${value}\`\n`;
+    }
+    return message;
+}
+
+/**
+ * Format an error message with consistent styling
+ */
+function formatErrorMessage(title, error, suggestions = []) {
+    let message = `❌ *${title}*\n\n`;
+    message += `Error: ${error}\n`;
+    if (suggestions.length > 0) {
+        message += `\n*Possible Solutions:*\n`;
+        suggestions.forEach(s => message += `• ${s}\n`);
+    }
+    return message;
+}
+
+/**
+ * Format a progress message with percentage
+ */
+function formatProgressMessage(stage, current, total, extraInfo = '') {
+    const percent = Math.round((current / total) * 100);
+    let message = `${stage}: ${current}/${total} (${percent}%)`;
+    if (extraInfo) message += `\n${extraInfo}`;
+    return message;
+}
+
+/**
+ * Format strategy start message with details
+ */
+function formatStrategyStart(name, config = {}) {
+    let message = `🚀 *Starting ${name}*\n\n`;
+    if (config.wallets) message += `Wallets: \`${config.wallets}\`\n`;
+    if (config.cycles) message += `Cycles: \`${config.cycles}\`\n`;
+    if (config.amount) message += `Amount Range: \`${config.amount}\`\n`;
+    if (config.mode) message += `Mode: \`${config.mode}\`\n`;
+    if (config.token) message += `Token: \`${config.token.substring(0, 8)}...\`\n`;
+    return message;
+}
+
+/**
+ * Format strategy completion message with stats
+ */
+function formatStrategyComplete(name, stats = {}) {
+    let message = `🎉 *${name} Complete!*\n\n`;
+    message += `*Results:*\n`;
+    if (stats.cycles) message += `Cycles: \`${stats.cycles}\`\n`;
+    if (stats.trades) message += `Trades: \`${stats.trades}\`\n`;
+    if (stats.success !== undefined) message += `Success Rate: \`${stats.success}%\`\n`;
+    if (stats.volume) message += `Volume: \`${stats.volume}\` SOL\n`;
+    if (stats.duration) message += `Duration: \`${stats.duration}\`\n`;
+    return message;
 }
 
 // ======================== TELEGRAM UI ========================
