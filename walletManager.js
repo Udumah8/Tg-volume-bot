@@ -573,10 +573,10 @@ export class WalletPool {
      * @param {Object} options - Funding options
      * @returns {Promise<{completed, successes, failures, skipped}>}
      */
-    async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null }) {
+    async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2 }) {
         if (!wallets || !wallets.length) {
             console.warn('[WalletPool] fundWallets called with empty array');
-            return { completed: 0, successes: 0, failures: 0, skipped: 0 };
+            return { completed: 0, successes, failures: 0, skipped: 0 };
         }
 
         console.log(`[WalletPool] Scanning ${wallets.length} specific wallets for funding needs...`);
@@ -616,6 +616,23 @@ export class WalletPool {
             progressCb({ completed: 0, total: walletsToFund.length, successes: 0, failures: 0, skipped, phase: 'funding' });
         }
 
+        // Use web funding (multi-hop) if enabled
+        if (useWebFunding && stealthLevel === 2 && hopDepth > 0) {
+            console.log(`[WalletPool] 🕸️ Web Funding enabled: ${hopDepth}-hop chain`);
+            return await this._fundWithMultiHop(walletsToFund, {
+                connection,
+                masterKeypair,
+                sendSOLFn,
+                amountSOL,
+                concurrency,
+                progressCb,
+                checkRunning,
+                hopDepth,
+                skipped
+            });
+        }
+
+        // Direct funding (default)
         const result = await this._batchExecute(
             walletsToFund,
             async (wallet) => {
@@ -627,6 +644,91 @@ export class WalletPool {
         );
 
         return { ...result, skipped };
+    }
+
+    /**
+     * Fund wallets using multi-hop chain for obfuscation
+     * Creates intermediate wallets to break direct on-chain link
+     * @private
+     */
+    async _fundWithMultiHop(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency, progressCb, checkRunning, hopDepth, skipped }) {
+        const results = { completed: 0, successes: 0, failures: 0, skipped };
+        
+        for (const targetWallet of wallets) {
+            if (checkRunning && !checkRunning()) {
+                console.log('[WalletPool] Multi-hop funding stopped by checkRunning');
+                break;
+            }
+
+            try {
+                // Generate intermediate hop wallets
+                const hopWallets = [];
+                for (let i = 0; i < hopDepth; i++) {
+                    hopWallets.push(Keypair.generate());
+                }
+
+                // Calculate amounts with fees
+                // Each hop needs: target amount + fees for next hop
+                const feePerHop = 0.000005; // Solana base fee
+                let currentAmount = amountSOL;
+                const hopAmounts = [];
+                
+                // Work backwards from target to calculate each hop amount
+                for (let i = hopDepth - 1; i >= 0; i--) {
+                    hopAmounts.unshift(currentAmount + feePerHop);
+                    currentAmount = currentAmount + feePerHop;
+                }
+
+                // Step 1: Fund first hop wallet from master
+                const firstHopAmount = hopAmounts[0];
+                await sendSOLFn(connection, masterKeypair, hopWallets[0].publicKey, firstHopAmount);
+                
+                // Small delay to ensure transaction confirms
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // Step 2: Chain through intermediate hops
+                for (let i = 0; i < hopDepth - 1; i++) {
+                    const fromWallet = hopWallets[i];
+                    const toWallet = hopWallets[i + 1];
+                    const amount = hopAmounts[i + 1];
+                    
+                    await sendSOLFn(connection, fromWallet, toWallet.publicKey, amount);
+                    
+                    // Small delay between hops
+                    await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 200));
+                }
+
+                // Step 3: Final hop to target wallet
+                const lastHopWallet = hopWallets[hopDepth - 1];
+                await sendSOLFn(connection, lastHopWallet, targetWallet.publicKey, amountSOL);
+
+                results.successes++;
+                console.log(`[WalletPool] ✅ Multi-hop funded: ${targetWallet.publicKey.toBase58().substring(0, 8)}... via ${hopDepth} hops`);
+
+            } catch (error) {
+                results.failures++;
+                console.error(`[WalletPool] ❌ Multi-hop failed for ${targetWallet.publicKey.toBase58().substring(0, 8)}...: ${error.message}`);
+            }
+
+            results.completed++;
+            
+            if (progressCb) {
+                progressCb({
+                    completed: results.completed,
+                    total: wallets.length,
+                    successes: results.successes,
+                    failures: results.failures,
+                    skipped: results.skipped
+                });
+            }
+
+            // Rate limiting between wallets
+            if (results.completed < wallets.length) {
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 500));
+            }
+        }
+
+        return results;
     }
 
     /**

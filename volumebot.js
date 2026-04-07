@@ -840,7 +840,10 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             fundResult = await walletManager.fundWallets(wallets, {
                 connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: fundAmount, concurrency: STATE.batchConcurrency,
                 progressCb: (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
-                checkRunning: () => STATE.running && !isShuttingDown
+                checkRunning: () => STATE.running && !isShuttingDown,
+                useWebFunding: STATE.useWebFunding,
+                stealthLevel: STATE.fundingStealthLevel,
+                hopDepth: STATE.makerFundingChainDepth
             });
         } else {
             fundResult = await walletManager.fundAll(
