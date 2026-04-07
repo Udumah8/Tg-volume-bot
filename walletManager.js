@@ -4,11 +4,13 @@ import bs58 from "bs58";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { WalletAgingManager, WALLET_AGE_TIERS } from "./walletAging.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WALLETS_FILE = path.join(__dirname, "wallets.json");
 const WALLETS_BACKUP = path.join(__dirname, "wallets.backup.json");
+const METADATA_FILE = path.join(__dirname, "wallets.metadata.json");
 
 /**
  * WalletPool — Manages 10,000+ persistent Solana wallets.
@@ -26,6 +28,8 @@ const WALLETS_BACKUP = path.join(__dirname, "wallets.backup.json");
  * - Memory-efficient random subset selection
  * - Automatic backup and recovery
  * - PublicKey index for O(1) lookups
+ * - Wallet aging and seasoning system
+ * - Organic behavior simulation
  */
 export class WalletPool {
     constructor() {
@@ -33,11 +37,16 @@ export class WalletPool {
         this.wallets = [];
         /** @type {Map<string, Keypair>} */
         this.publicKeyMap = new Map();
+        /** @type {Map<string, Object>} Wallet metadata for aging system */
+        this.metadata = new Map();
         /** @type {number} Last save timestamp for debouncing */
         this._lastSaveTime = 0;
         /** @type {number} Minimum ms between saves */
         this._saveDebounceMs = 1000;
+        /** @type {boolean} Enable wallet aging features */
+        this.agingEnabled = true;
         this._load();
+        this._loadMetadata();
     }
 
     // ─── Persistence ───────────────────────────────
@@ -52,6 +61,15 @@ export class WalletPool {
                 this.wallets = raw.map(w => {
                     const kp = Keypair.fromSecretKey(bs58.decode(w.secretKey));
                     this.publicKeyMap.set(kp.publicKey.toBase58(), kp);
+                    
+                    // Initialize metadata if aging is enabled
+                    if (this.agingEnabled && !this.metadata.has(kp.publicKey.toBase58())) {
+                        this.metadata.set(
+                            kp.publicKey.toBase58(),
+                            WalletAgingManager.initializeMetadata(kp)
+                        );
+                    }
+                    
                     return kp;
                 });
                 console.log(`✅ [WalletPool] Loaded ${this.wallets.length} wallets from disk.`);
@@ -80,6 +98,25 @@ export class WalletPool {
                 this.wallets = [];
                 this.publicKeyMap.clear();
             }
+        }
+    }
+
+    /**
+     * Load wallet metadata from disk
+     */
+    _loadMetadata() {
+        if (!this.agingEnabled) return;
+        
+        try {
+            if (fs.existsSync(METADATA_FILE)) {
+                const raw = JSON.parse(fs.readFileSync(METADATA_FILE, "utf-8"));
+                for (const [pubKey, meta] of Object.entries(raw)) {
+                    this.metadata.set(pubKey, WalletAgingManager.deserializeMetadata(meta));
+                }
+                console.log(`✅ [WalletPool] Loaded metadata for ${this.metadata.size} wallets.`);
+            }
+        } catch (e) {
+            console.error(`⚠️ [WalletPool] Failed to load metadata: ${e.message}`);
         }
     }
 
@@ -120,6 +157,11 @@ export class WalletPool {
                 this.publicKeyMap.set(wallet.publicKey.toBase58(), wallet);
             }
             
+            // Save metadata
+            if (this.agingEnabled) {
+                this._saveMetadata();
+            }
+            
             console.debug(`💾 [WalletPool] Saved ${this.wallets.length} wallets to disk.`);
         } catch (e) {
             console.error(`❌ [WalletPool] Failed to save wallets.json: ${e.message}`);
@@ -128,6 +170,32 @@ export class WalletPool {
                 const tempFile = WALLETS_FILE + '.tmp';
                 if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
             } catch {}
+        }
+    }
+
+    /**
+     * Save wallet metadata to disk
+     */
+    _saveMetadata() {
+        if (!this.agingEnabled) return;
+        
+        try {
+            const data = {};
+            for (const [pubKey, meta] of this.metadata.entries()) {
+                data[pubKey] = WalletAgingManager.serializeMetadata(meta);
+            }
+            
+            const tempFile = METADATA_FILE + '.tmp';
+            fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), "utf-8");
+            
+            if (fs.existsSync(METADATA_FILE)) {
+                fs.copyFileSync(METADATA_FILE, METADATA_FILE + '.backup');
+            }
+            
+            fs.renameSync(tempFile, METADATA_FILE);
+            console.debug(`💾 [WalletPool] Saved metadata for ${this.metadata.size} wallets.`);
+        } catch (e) {
+            console.error(`❌ [WalletPool] Failed to save metadata: ${e.message}`);
         }
     }
 
@@ -187,14 +255,113 @@ export class WalletPool {
      * Use this when you do not want to use or pollute the saved wallets.json.
      * 
      * @param {number} count - Number of ephemeral wallets to generate
+     * @param {boolean} withSimulatedAging - Whether to simulate aging metadata (default: true)
      * @returns {Keypair[]} Array of newly generated Keypairs
      */
-    generateEphemeralWallets(count) {
+    generateEphemeralWallets(count, withSimulatedAging = true) {
         const tempWallets = [];
-        for (let i = 0; i < count; i++) {
-            tempWallets.push(Keypair.generate());
+        
+        if (!withSimulatedAging || !this.agingEnabled) {
+            // Simple generation without aging
+            for (let i = 0; i < count; i++) {
+                tempWallets.push(Keypair.generate());
+            }
+            return tempWallets;
         }
+        
+        // Generate with simulated age distribution for organic behavior
+        const distribution = {
+            VETERAN: Math.floor(count * 0.15),  // 15% veterans
+            MATURE: Math.floor(count * 0.25),   // 25% mature
+            SEASONED: Math.floor(count * 0.35), // 35% seasoned
+            YOUNG: Math.floor(count * 0.20),    // 20% young
+            FRESH: Math.floor(count * 0.05)     // 5% fresh
+        };
+        
+        // Fill remaining to reach exact count
+        const allocated = Object.values(distribution).reduce((a, b) => a + b, 0);
+        if (allocated < count) {
+            distribution.SEASONED += (count - allocated);
+        }
+        
+        for (const [tier, tierCount] of Object.entries(distribution)) {
+            for (let i = 0; i < tierCount; i++) {
+                const wallet = Keypair.generate();
+                
+                // Simulate age by backdating creation time
+                const meta = WalletAgingManager.initializeMetadata(wallet);
+                meta.createdAt = this._getBackdatedTimestamp(tier);
+                meta.ageTier = tier;
+                
+                // Simulate trading history
+                meta.totalTrades = this._getSimulatedTrades(tier);
+                meta.totalVolume = this._getSimulatedVolume(tier);
+                meta.firstTradeAt = meta.createdAt + (24 * 60 * 60 * 1000); // Day after creation
+                meta.lastTradeAt = Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000; // Within last week
+                
+                // Update trust score based on simulated activity
+                WalletAgingManager.updateAgeTier(meta);
+                
+                // Store in metadata map (in-memory for ephemeral)
+                this.metadata.set(wallet.publicKey.toBase58(), meta);
+                tempWallets.push(wallet);
+            }
+        }
+        
         return tempWallets;
+    }
+    
+    /**
+     * Get backdated timestamp for simulated wallet age
+     * @private
+     */
+    _getBackdatedTimestamp(tier) {
+        const now = Date.now();
+        const ageRanges = {
+            VETERAN: [90, 365],  // 90-365 days ago
+            MATURE: [30, 90],    // 30-90 days ago
+            SEASONED: [7, 30],   // 7-30 days ago
+            YOUNG: [1, 7],       // 1-7 days ago
+            FRESH: [0, 1]        // 0-1 day ago
+        };
+        
+        const [min, max] = ageRanges[tier] || [0, 1];
+        const daysAgo = min + Math.random() * (max - min);
+        return now - (daysAgo * 24 * 60 * 60 * 1000);
+    }
+    
+    /**
+     * Get simulated trade count for wallet tier
+     * @private
+     */
+    _getSimulatedTrades(tier) {
+        const tradeRanges = {
+            VETERAN: [50, 200],
+            MATURE: [20, 50],
+            SEASONED: [5, 20],
+            YOUNG: [1, 5],
+            FRESH: [0, 1]
+        };
+        
+        const [min, max] = tradeRanges[tier] || [0, 1];
+        return Math.floor(min + Math.random() * (max - min));
+    }
+    
+    /**
+     * Get simulated volume for wallet tier
+     * @private
+     */
+    _getSimulatedVolume(tier) {
+        const volumeRanges = {
+            VETERAN: [5.0, 20.0],
+            MATURE: [1.0, 5.0],
+            SEASONED: [0.2, 1.0],
+            YOUNG: [0.05, 0.2],
+            FRESH: [0, 0.05]
+        };
+        
+        const [min, max] = volumeRanges[tier] || [0, 0.05];
+        return parseFloat((min + Math.random() * (max - min)).toFixed(4));
     }
 
     // ─── Batch Operations ──────────────────────────
@@ -544,12 +711,13 @@ export class WalletPool {
      * @param {number} concurrency - Max parallel balance queries
      * @returns {Promise<{totalSOL, funded, empty, balances: number[]}>}
      */
-    async scanBalances(connection, concurrency = 20) {
+    async scanBalances(connection, concurrency = 20, showDetails = false) {
         if (!this.wallets.length) {
-            return { totalSOL: 0, funded: 0, empty: 0, balances: [] };
+            return { totalSOL: 0, funded: 0, empty: 0, balances: [], walletDetails: [] };
         }
 
         const balances = new Array(this.wallets.length).fill(0);
+        const walletDetails = [];
         let totalLamports = 0;
         let funded = 0;
         let empty = 0;
@@ -562,12 +730,44 @@ export class WalletPool {
                     const bal = await connection.getBalance(wallet.publicKey, 'confirmed');
                     balances[i] = bal;
                     totalLamports += bal;
-                    // A wallet is only considered "funded" if it can actually perform a trade (>= MIN_RENT)
-                    if (bal >= 2100000) funded++;
+                    
+                    const solBalance = bal / LAMPORTS_PER_SOL;
+                    const isFunded = bal >= 2100000; // MIN_RENT threshold
+                    
+                    if (isFunded) funded++;
                     else empty++;
-                } catch {
+                    
+                    // Store detailed info for each wallet
+                    walletDetails.push({
+                        index: i,
+                        address: wallet.publicKey.toBase58(),
+                        balance: solBalance,
+                        lamports: bal,
+                        isFunded,
+                        status: isFunded ? '✅' : '❌'
+                    });
+                    
+                    // Show details in console if requested
+                    if (showDetails) {
+                        const status = isFunded ? '✅' : '❌';
+                        console.log(`  ${status} Wallet ${i + 1}: ${wallet.publicKey.toBase58().substring(0, 8)}... | ${solBalance.toFixed(6)} SOL`);
+                    }
+                } catch (error) {
                     empty++;
                     balances[i] = 0;
+                    walletDetails.push({
+                        index: i,
+                        address: wallet.publicKey.toBase58(),
+                        balance: 0,
+                        lamports: 0,
+                        isFunded: false,
+                        status: '❌',
+                        error: error.message
+                    });
+                    
+                    if (showDetails) {
+                        console.log(`  ❌ Wallet ${i + 1}: ${wallet.publicKey.toBase58().substring(0, 8)}... | ERROR: ${error.message}`);
+                    }
                 }
             },
             concurrency,
@@ -586,6 +786,7 @@ export class WalletPool {
             funded, 
             empty, 
             balances,
+            walletDetails,
             scanned: this.wallets.length,
             duration: totalTime
         };
@@ -780,6 +981,231 @@ export class WalletPool {
      */
     get allWallets() {
         return [...this.wallets];
+    }
+
+    // ─── Wallet Aging Methods ──────────────────────
+
+    /**
+     * Update trade metadata for a wallet
+     */
+    updateTradeMetadata(wallet, tradeAmount, tokenAddress) {
+        if (!this.agingEnabled) return;
+        
+        const pubKey = wallet.publicKey.toBase58();
+        let meta = this.metadata.get(pubKey);
+        
+        if (!meta) {
+            meta = WalletAgingManager.initializeMetadata(wallet);
+            this.metadata.set(pubKey, meta);
+        }
+        
+        WalletAgingManager.updateTradeMetadata(meta, tradeAmount, tokenAddress);
+        this._saveMetadata();
+    }
+
+    /**
+     * Get wallets filtered by age tier
+     */
+    getWalletsByAgeTier(tier, count) {
+        if (!this.agingEnabled) {
+            return this.getRandomSubset(count);
+        }
+        
+        const filtered = this.wallets.filter(w => {
+            const meta = this.metadata.get(w.publicKey.toBase58());
+            if (!meta) {
+                // Initialize metadata for wallets without it
+                const newMeta = WalletAgingManager.initializeMetadata(w);
+                this.metadata.set(w.publicKey.toBase58(), newMeta);
+                WalletAgingManager.updateAgeTier(newMeta);
+                return newMeta.ageTier === tier;
+            }
+            WalletAgingManager.updateAgeTier(meta);
+            return meta.ageTier === tier;
+        });
+        
+        const n = Math.min(count, filtered.length);
+        return this._selectRandom(filtered, n);
+    }
+
+    /**
+     * Get optimal wallet mix based on age distribution
+     */
+    getOptimalWalletMix(count) {
+        if (!this.agingEnabled || this.wallets.length === 0) {
+            return this.getRandomSubset(count);
+        }
+        
+        // Update all wallet age tiers first
+        for (const wallet of this.wallets) {
+            const pubKey = wallet.publicKey.toBase58();
+            let meta = this.metadata.get(pubKey);
+            if (!meta) {
+                meta = WalletAgingManager.initializeMetadata(wallet);
+                this.metadata.set(pubKey, meta);
+            }
+            WalletAgingManager.updateAgeTier(meta);
+        }
+        
+        // Target distribution
+        const distribution = {
+            VETERAN: Math.floor(count * 0.15),  // 15% veterans
+            MATURE: Math.floor(count * 0.25),   // 25% mature
+            SEASONED: Math.floor(count * 0.35), // 35% seasoned
+            YOUNG: Math.floor(count * 0.20),    // 20% young
+            FRESH: Math.floor(count * 0.05)     // 5% fresh
+        };
+
+        const selected = [];
+        for (const [tier, tierCount] of Object.entries(distribution)) {
+            if (tierCount > 0) {
+                const tierWallets = this.getWalletsByAgeTier(tier, tierCount);
+                selected.push(...tierWallets);
+            }
+        }
+
+        // Fill remaining with any available wallets
+        const remaining = count - selected.length;
+        if (remaining > 0) {
+            const available = this.wallets.filter(w => !selected.includes(w));
+            const additional = this._selectRandom(available, remaining);
+            selected.push(...additional);
+        }
+
+        return selected.slice(0, count);
+    }
+
+    /**
+     * Get aging statistics
+     */
+    getAgingStats() {
+        if (!this.agingEnabled) {
+            return {
+                FRESH: 0,
+                YOUNG: 0,
+                SEASONED: 0,
+                MATURE: 0,
+                VETERAN: 0,
+                avgTrustScore: 0,
+                totalTrades: 0,
+                totalVolume: 0
+            };
+        }
+        
+        const stats = {
+            FRESH: 0,
+            YOUNG: 0,
+            SEASONED: 0,
+            MATURE: 0,
+            VETERAN: 0,
+            avgTrustScore: 0,
+            totalTrades: 0,
+            totalVolume: 0
+        };
+        
+        let totalTrust = 0;
+        
+        for (const wallet of this.wallets) {
+            const pubKey = wallet.publicKey.toBase58();
+            let meta = this.metadata.get(pubKey);
+            
+            if (!meta) {
+                meta = WalletAgingManager.initializeMetadata(wallet);
+                this.metadata.set(pubKey, meta);
+            }
+            
+            WalletAgingManager.updateAgeTier(meta);
+            stats[meta.ageTier]++;
+            totalTrust += meta.trustScore;
+            stats.totalTrades += meta.totalTrades;
+            stats.totalVolume += meta.totalVolume;
+        }
+        
+        stats.avgTrustScore = this.wallets.length > 0 ? totalTrust / this.wallets.length : 0;
+        
+        return stats;
+    }
+
+    /**
+     * Get detailed stats for a specific wallet
+     */
+    getWalletStats(wallet) {
+        if (!this.agingEnabled) return null;
+        
+        const pubKey = wallet.publicKey.toBase58();
+        const meta = this.metadata.get(pubKey);
+        
+        if (!meta) return null;
+        
+        return WalletAgingManager.getWalletStats(meta);
+    }
+
+    /**
+     * Calculate age-based delay for a wallet
+     */
+    calculateAgeBasedDelay(wallet, baseDelay) {
+        if (!this.agingEnabled) return baseDelay;
+        
+        const pubKey = wallet.publicKey.toBase58();
+        const meta = this.metadata.get(pubKey);
+        
+        if (!meta) return baseDelay;
+        
+        return WalletAgingManager.calculateAgeBasedDelay(meta, baseDelay);
+    }
+
+    /**
+     * Calculate age-based trade amount for a wallet
+     */
+    calculateAgeBasedAmount(wallet, baseAmount) {
+        if (!this.agingEnabled) return baseAmount;
+        
+        const pubKey = wallet.publicKey.toBase58();
+        const meta = this.metadata.get(pubKey);
+        
+        if (!meta) return baseAmount;
+        
+        return WalletAgingManager.calculateAgeBasedAmount(meta, baseAmount);
+    }
+
+    /**
+     * Check if wallet should trade now based on behavior profile
+     */
+    shouldTradeNow(wallet) {
+        if (!this.agingEnabled) return true;
+        
+        const pubKey = wallet.publicKey.toBase58();
+        const meta = this.metadata.get(pubKey);
+        
+        if (!meta) return true;
+        
+        return WalletAgingManager.shouldTradeNow(meta);
+    }
+
+    /**
+     * Enable or disable aging system
+     */
+    setAgingEnabled(enabled) {
+        this.agingEnabled = enabled;
+        console.log(`[WalletPool] Aging system ${enabled ? 'enabled' : 'disabled'}`);
+    }
+
+    // ─── Helper Methods ────────────────────────────
+
+    /**
+     * Select random items from array
+     */
+    _selectRandom(array, count) {
+        if (count >= array.length) return [...array];
+        if (count <= 0) return [];
+        
+        const shuffled = [...array];
+        for (let i = shuffled.length - 1; i > shuffled.length - 1 - count && i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        
+        return shuffled.slice(shuffled.length - count);
     }
 
     // ─── Compatibility Methods ─────────────────────

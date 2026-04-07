@@ -39,6 +39,7 @@ function mapMarket(targetDex) {
 import { sendJitoBundle, estimateJitoTip, isJitoErrorRetryable, JITO_TIP_ACCOUNTS } from "./jito.js";
 import WalletPool from "./walletManager.js";
 import { BatchSwapEngine } from "./batchEngine.js";
+import { SeasoningEngine } from "./seasoningEngine.js";
 
 // ─────────────────────────────────────────────
 // 🛡️ Global Safety Guards
@@ -743,7 +744,8 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
 // ─────────────────────────────────────────────
 function fetchWallets(count) {
     if (STATE.useWalletPool) {
-        return walletManager.getWallets(count);
+        // Use age-optimized wallet selection for organic behavior
+        return walletManager.getOptimalWalletMix(count);
     } else {
         return walletManager.generateEphemeralWallets(count);
     }
@@ -760,6 +762,19 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
 
     const wallets = fetchWallets(walletCount);
     const isEphemeral = !STATE.useWalletPool;
+
+    // Show aging distribution for both pool and ephemeral (if aging enabled)
+    if (walletManager.agingEnabled) {
+        const stats = walletManager.getAgingStats();
+        const mode = isEphemeral ? '(Simulated)' : '(Real)';
+        bot.sendMessage(chatId, 
+            `📊 *Wallet Age Distribution ${mode}:*\n` +
+            `🏆 Veteran: ${stats.VETERAN || 0} | 🌳 Mature: ${stats.MATURE || 0}\n` +
+            `🌿 Seasoned: ${stats.SEASONED || 0} | 🌱 Young: ${stats.YOUNG || 0} | 🆕 Fresh: ${stats.FRESH || 0}\n` +
+            `Trust Score: ${(stats.avgTrustScore || 0).toFixed(2)}`,
+            { parse_mode: 'Markdown' }
+        );
+    }
 
     if (needsFunding && fundAmount > 0) {
         const totalNeeded = wallets.length * fundAmount;
@@ -815,7 +830,29 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             wallets,
             async (wallet, idx) => {
                 if (!STATE.running || isShuttingDown) return null;
-                return await buyLogic(wallet, idx, volMult, connection, chatId);
+                
+                // Age-aware trading: Check if wallet should trade now (works for both pool and ephemeral)
+                if (walletManager.agingEnabled && !walletManager.shouldTradeNow(wallet)) {
+                    logger.debug(`[Aging] Wallet ${idx} skipping (not preferred time)`);
+                    return null;
+                }
+                
+                // Apply age-based delay before trading (works for both pool and ephemeral)
+                if (walletManager.agingEnabled) {
+                    const ageDelay = walletManager.calculateAgeBasedDelay(wallet, STATE.intervalBetweenActions);
+                    const jitter = Math.random() * 200; // Small jitter
+                    await sleep(Math.min(ageDelay / wallets.length, 500) + jitter); // Distributed delay
+                }
+                
+                const result = await buyLogic(wallet, idx, volMult, connection, chatId);
+                
+                // Update trade metadata on success (works for both pool and ephemeral)
+                if (result && walletManager.agingEnabled) {
+                    const amount = STATE.minBuyAmount; // Approximate amount
+                    walletManager.updateTradeMetadata(wallet, amount, STATE.tokenAddress);
+                }
+                
+                return result;
             },
             STATE.batchConcurrency,
             (progress) => {
@@ -840,7 +877,15 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             wallets,
             async (wallet, idx) => {
                 // Removing checkRunning to force sell execution so tokens are not stranded
-                return await sellLogic(wallet, idx, volMult, connection, chatId);
+                const result = await sellLogic(wallet, idx, volMult, connection, chatId);
+                
+                // Update trade metadata on successful sell (works for both pool and ephemeral)
+                if (result && walletManager.agingEnabled) {
+                    const amount = STATE.minBuyAmount; // Approximate amount
+                    walletManager.updateTradeMetadata(wallet, amount, STATE.tokenAddress);
+                }
+                
+                return result;
             },
             STATE.batchConcurrency,
             null,
@@ -2068,6 +2113,7 @@ function showWalletPoolMenu(chatId) {
                 inline_keyboard: [
                     [{ text: '🔨 Generate', callback_data: 'pool_generate' }],
                     [{ text: '💰 Fund All', callback_data: 'pool_fund' }, { text: '🔄 Drain All', callback_data: 'pool_drain' }],
+                    [{ text: '📊 Aging Stats', callback_data: 'aging_stats' }, { text: '🌱 Season Wallets', callback_data: 'aging_season' }],
                     [{ text: '📊 Scan', callback_data: 'pool_scan' }, { text: `${STATE.useWalletPool ? '🔴 Disable' : '🟢 Enable'}`, callback_data: 'pool_toggle' }],
                     [{ text: '⚡ Concurrency', callback_data: 'set_batch_concurrency' }, { text: '👥 Per Cycle', callback_data: 'set_wallets_per_cycle' }],
                     [{ text: '💵 Fund Amt', callback_data: 'set_fund_amount' }, { text: '🗑️ Clear', callback_data: 'pool_clear' }],
@@ -2406,12 +2452,178 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'pool_scan') {
         await withRpcFallback(async (connection) => {
             bot.sendMessage(chatId, `📊 Scanning ${walletManager.size} wallets...`);
-            const scan = await walletManager.scanBalances(connection, 30);
-            bot.sendMessage(chatId, `📊 *Scan Complete*\nTotal SOL: \`${scan.totalSOL.toFixed(4)}\`\nFunded: \`${scan.funded}\` | Empty: \`${scan.empty}\``, { parse_mode: 'Markdown' });
+            
+            // Scan with details enabled
+            const scan = await walletManager.scanBalances(connection, 30, true);
+            
+            // Build summary message
+            let message = `📊 *Scan Complete*\n\n`;
+            message += `Total SOL: \`${scan.totalSOL.toFixed(4)}\`\n`;
+            message += `Funded: \`${scan.funded}\` | Empty: \`${scan.empty}\`\n`;
+            message += `Duration: \`${scan.duration}s\`\n\n`;
+            
+            // Add detailed wallet list (limit to prevent message too long)
+            const maxWalletsToShow = 20;
+            if (scan.walletDetails && scan.walletDetails.length > 0) {
+                message += `*Wallet Details:*\n`;
+                
+                const walletsToShow = scan.walletDetails.slice(0, maxWalletsToShow);
+                for (const wallet of walletsToShow) {
+                    const addr = wallet.address.substring(0, 8) + '...' + wallet.address.substring(wallet.address.length - 4);
+                    message += `${wallet.status} \`${addr}\` | ${wallet.balance.toFixed(6)} SOL\n`;
+                }
+                
+                if (scan.walletDetails.length > maxWalletsToShow) {
+                    message += `\n_...and ${scan.walletDetails.length - maxWalletsToShow} more wallets_\n`;
+                }
+                
+                // Add summary by status
+                message += `\n*Summary:*\n`;
+                message += `✅ Funded (≥0.0021 SOL): ${scan.funded}\n`;
+                message += `❌ Empty (<0.0021 SOL): ${scan.empty}\n`;
+            }
+            
+            bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
             showWalletPoolMenu(chatId);
         });
     }
     else if (action === 'pool_toggle') { STATE.useWalletPool = !STATE.useWalletPool; saveConfig(); bot.sendMessage(chatId, `✅ Pool Mode: *${STATE.useWalletPool ? 'ON' : 'OFF'}*`, { parse_mode: 'Markdown' }); showWalletPoolMenu(chatId); }
+    
+    // Aging system callbacks
+    else if (action === 'aging_stats') {
+        if (!STATE.useWalletPool) {
+            return bot.sendMessage(chatId, `❌ Aging system only works with Wallet Pool mode enabled.`);
+        }
+        
+        const stats = walletManager.getAgingStats();
+        const enabled = walletManager.agingEnabled ? '🟢 ENABLED' : '🔴 DISABLED';
+        
+        bot.sendMessage(chatId, 
+            `📊 *Wallet Aging Statistics*\n\n` +
+            `Status: ${enabled}\n` +
+            `Total Wallets: ${stats.total || 0}\n\n` +
+            `*Age Distribution:*\n` +
+            `🏆 Veteran (90+ days): ${stats.VETERAN || 0}\n` +
+            `🌳 Mature (30-90 days): ${stats.MATURE || 0}\n` +
+            `🌿 Seasoned (7-30 days): ${stats.SEASONED || 0}\n` +
+            `🌱 Young (1-7 days): ${stats.YOUNG || 0}\n` +
+            `🆕 Fresh (0-1 day): ${stats.FRESH || 0}\n\n` +
+            `*Performance:*\n` +
+            `Avg Trust Score: ${(stats.avgTrustScore || 0).toFixed(2)}\n` +
+            `Total Trades: ${stats.totalTrades || 0}\n` +
+            `Total Volume: ${(stats.totalVolume || 0).toFixed(4)} SOL`,
+            { 
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: `${walletManager.agingEnabled ? '🔴 Disable' : '🟢 Enable'} Aging`, callback_data: 'aging_toggle' }],
+                        [{ text: '« Back', callback_data: 'wallet_pool' }]
+                    ]
+                }
+            }
+        );
+    }
+    else if (action === 'aging_toggle') {
+        walletManager.setAgingEnabled(!walletManager.agingEnabled);
+        bot.sendMessage(chatId, `✅ Aging System: *${walletManager.agingEnabled ? 'ENABLED' : 'DISABLED'}*`, { parse_mode: 'Markdown' });
+    }
+    else if (action === 'aging_season') {
+        if (!STATE.useWalletPool) {
+            return bot.sendMessage(chatId, `❌ Seasoning only works with Wallet Pool mode enabled.`);
+        }
+        
+        if (walletManager.size === 0) {
+            return bot.sendMessage(chatId, `❌ No wallets to season. Generate wallets first!`);
+        }
+        
+        bot.sendMessage(chatId, 
+            `🌱 *Season Wallets*\n\n` +
+            `Seasoning builds organic trading history.\n\n` +
+            `Reply with wallet count (e.g. \`50\`):`,
+            { parse_mode: 'Markdown' }
+        );
+        
+        promptSetting(chatId, `Enter number of wallets to season:`, async (val) => {
+            const count = parseInt(val);
+            if (isNaN(count) || count <= 0) {
+                return bot.sendMessage(chatId, `❌ Invalid count.`);
+            }
+            
+            const walletsToSeason = walletManager.getRandomSubset(Math.min(count, walletManager.size));
+            bot.sendMessage(chatId, `🌱 Seasoning ${walletsToSeason.length} wallets...`);
+            
+            try {
+                const connection = getConnection();
+                
+                // Fund wallets first (need SOL for seasoning activities)
+                const fundAmount = 0.01; // 0.01 SOL per wallet for seasoning
+                bot.sendMessage(chatId, `💰 Funding ${walletsToSeason.length} wallets with ${fundAmount} SOL each...`);
+                
+                const fundResult = await walletManager.fundWallets(walletsToSeason, {
+                    connection,
+                    masterKeypair,
+                    sendSOLFn: sendSOL,
+                    amountSOL: fundAmount,
+                    concurrency: STATE.batchConcurrency,
+                    progressCb: (prog) => {
+                        if (prog.successes % 10 === 0) {
+                            bot.sendMessage(chatId, `💰 Funded: ${prog.successes}/${prog.total}`).catch(() => {});
+                        }
+                    },
+                    checkRunning: () => STATE.running && !isShuttingDown
+                });
+                
+                if (fundResult.failures > walletsToSeason.length / 2) {
+                    return bot.sendMessage(chatId, `❌ Funding failed for most wallets (${fundResult.failures}/${walletsToSeason.length}). Aborting seasoning.`);
+                }
+                
+                bot.sendMessage(chatId, `✅ Funded ${fundResult.successes} wallets. Starting seasoning...`);
+                
+                // Now season the wallets with liquid tokens (USDC/USDT)
+                const result = await SeasoningEngine.quickSeason(
+                    walletsToSeason,
+                    connection,
+                    masterKeypair,
+                    async (fromToken, toToken, wallet, conn, amount, chatId, silent) => {
+                        // Wrapper to pass through swap function
+                        return await swap(fromToken, toToken, wallet, conn, amount, chatId, silent);
+                    },
+                    {
+                        activitiesPerWallet: 2,
+                        minAmount: 0.001,
+                        maxAmount: 0.005,
+                        useLiquidTokens: true, // Use USDC/USDT/mSOL/stSOL for reliable swaps
+                        progressCb: (progress) => {
+                            if (progress.completed % 10 === 0) {
+                                bot.sendMessage(chatId, `🌱 Progress: ${progress.percent}%`).catch(() => {});
+                            }
+                        }
+                    }
+                );
+                
+                // Drain remaining SOL back to master
+                bot.sendMessage(chatId, `🔄 Draining remaining SOL from wallets...`);
+                await walletManager.drainWallets(walletsToSeason, {
+                    connection,
+                    masterKeypair,
+                    sendSOLFn: sendSOL,
+                    concurrency: STATE.batchConcurrency
+                });
+                
+                bot.sendMessage(chatId, 
+                    `✅ *Seasoning Complete!*\n` +
+                    `Wallets: ${walletsToSeason.length}\n` +
+                    `Activities: ${result.successes}/${result.total}\n` +
+                    `Success Rate: ${Math.round((result.successes / result.total) * 100)}%`,
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (error) {
+                logger.error(`Seasoning failed: ${error.message}`);
+                bot.sendMessage(chatId, `❌ Seasoning failed: ${error.message}`);
+            }
+        });
+    }
+    
     else if (action === 'pool_clear') {
         promptSetting(chatId, `⚠️ *Clear ALL ${walletManager.size} wallets?* Reply \`DELETE\` to confirm:`, (val) => {
             if (val.toUpperCase() !== 'DELETE') return bot.sendMessage(chatId, `❌ Cancelled.`);
