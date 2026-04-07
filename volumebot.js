@@ -347,6 +347,12 @@ const PERSONALITIES = {
     WASH: { buyProb: 1.0, sellProb: 1.0, minHold: 1, maxHold: 2, sizeMult: 1.0, minThink: 200, maxThink: 800 }
 };
 
+// ─────────────────────────────────────────────
+// 💰 Funding Constants
+// ─────────────────────────────────────────────
+const MIN_FUND_AMOUNT = 0.005; // Minimum SOL per wallet for reliable trading
+const RECOMMENDED_FUND_AMOUNT = 0.01; // Recommended for comfortable operation
+
 const STATE = {
     tokenAddress: "", strategy: "STANDARD", running: false,
     minBuyAmount: 0.01, maxBuyAmount: 0.05, priorityFee: 0.0005, slippage: 2,
@@ -354,7 +360,7 @@ const STATE = {
     intervalBetweenActions: 15000, jitterPercentage: 20,
     realismMode: true, humanizedDelays: true, variableSlippage: true,
     usePoissonTiming: true, useVolumeCurve: true, volCurveIntensity: 1.5,
-    useWalletPool: true, fundAmountPerWallet: 0.01, batchConcurrency: 10,
+    useWalletPool: true, fundAmountPerWallet: 0.005, batchConcurrency: 10,
     walletsPerCycle: 50, useWebFunding: true, fundingStealthLevel: 2,
     makerFundingChainDepth: 2, makerWalletsToGenerate: 3,
     useJito: false, jitoTipAmount: 0.0001,
@@ -756,6 +762,27 @@ function fetchWallets(count) {
 // ─────────────────────────────────────────────
 async function executeStrategyTemplate(chatId, connection, strategyConfig) {
     const { name, walletCount, fundAmount, buyLogic, sellLogic, cycles, needsFunding = true, autoDrain = true } = strategyConfig;
+
+    // ⚠️ Pre-flight validation: Check funding amount
+    if (needsFunding && fundAmount > 0 && fundAmount < MIN_FUND_AMOUNT) {
+        bot.sendMessage(chatId, 
+            `⚠️ *Warning: Low Funding Amount*\n\n` +
+            `Current: \`${fundAmount}\` SOL\n` +
+            `Minimum: \`${MIN_FUND_AMOUNT}\` SOL\n` +
+            `Recommended: \`${RECOMMENDED_FUND_AMOUNT}\` SOL\n\n` +
+            `⚡ *Why This Matters:*\n` +
+            `• Rent: 0.002 SOL (locked)\n` +
+            `• Fees: ~0.001 SOL\n` +
+            `• Trade: ${STATE.minBuyAmount} SOL (minimum)\n` +
+            `• Buffer: ~0.001 SOL\n\n` +
+            `💡 *Trades will likely fail with insufficient funds.*\n\n` +
+            `Update via: ⚙️ Settings → 📱 Basic → Fund Amount`,
+            { parse_mode: 'Markdown' }
+        );
+        
+        // Give user 5 seconds to see the warning before proceeding
+        await sleep(5000);
+    }
 
     // Enhanced strategy start message
     bot.sendMessage(chatId, formatStrategyStart(name, {
