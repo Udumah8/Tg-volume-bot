@@ -849,7 +849,10 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             fundResult = await walletManager.fundAll(
                 connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
                 (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
-                () => STATE.running && !isShuttingDown
+                () => STATE.running && !isShuttingDown,
+                STATE.useWebFunding,
+                STATE.fundingStealthLevel,
+                STATE.makerFundingChainDepth
             );
         }
 
@@ -1633,8 +1636,8 @@ async function executeSniperStrategy(chatId, connection) {
     bot.sendMessage(chatId, `⚡ *SNIPER MODE* — Fast entry + staged exits`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -1662,8 +1665,8 @@ async function executeAdvWashStrategy(chatId, connection) {
     const wallets = fetchWallets(STATE.walletsPerCycle);
     const groupSize = Math.floor(wallets.length / STATE.washGroupCount);
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
 
     for (let c = 0; c < STATE.washCyclesPerGroup && STATE.running; c++) {
         for (let g = 0; g < STATE.washGroupCount; g++) {
@@ -1687,8 +1690,8 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🐳 *MIRROR WHALE* — Copying top holders in real-time`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -1715,8 +1718,8 @@ async function executeCurvePumpStrategy(chatId, connection) {
     bot.sendMessage(chatId, `📈 *CURVE PUMP* — Pushing bonding curve to ${STATE.curveTargetPercent}%`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet, idx) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -2550,7 +2553,7 @@ bot.on('callback_query', async (callbackQuery) => {
             await withRpcFallback(async (connection) => {
                 bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets...`);
                 // Manual funding should only check for shutdown, not if a strategy is "running"
-                const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown);
+                const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
                 bot.sendMessage(chatId, `✅ Funding complete. ${result.successes} succeeded, ${result.failures} failed.`);
                 showWalletPoolMenu(chatId);
             });

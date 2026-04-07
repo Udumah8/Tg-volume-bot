@@ -512,9 +512,12 @@ export class WalletPool {
      * @param {number} concurrency - Max parallel funding operations
      * @param {Function} progressCb - Optional progress callback
      * @param {Function} checkRunning - Optional cancellation check
+     * @param {boolean} useWebFunding - Enable multi-hop funding
+     * @param {number} stealthLevel - 1=direct, 2=multi-hop
+     * @param {number} hopDepth - Number of intermediate hops (1-5)
      * @returns {Promise<{completed, successes, failures, skipped}>}
      */
-    async fundAll(connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null) {
+    async fundAll(connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2) {
         if (!this.wallets.length) {
             console.warn('[WalletPool] fundAll called with empty pool');
             return { completed: 0, successes: 0, failures: 0, skipped: 0 };
@@ -553,6 +556,23 @@ export class WalletPool {
             });
         }
 
+        // Use web funding (multi-hop) if enabled
+        if (useWebFunding && stealthLevel === 2 && hopDepth > 0) {
+            console.log(`[WalletPool] 🕸️ Web Funding enabled: ${hopDepth}-hop chain`);
+            return await this._fundWithMultiHop(walletsToFund, {
+                connection,
+                masterKeypair,
+                sendSOLFn,
+                amountSOL,
+                concurrency,
+                progressCb,
+                checkRunning,
+                hopDepth,
+                skipped
+            });
+        }
+
+        // Direct funding (default)
         const result = await this._batchExecute(
             walletsToFund,
             async (wallet) => {
