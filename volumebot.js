@@ -4176,11 +4176,11 @@ bot.onText(/\/start/, (msg) => {
 });
 
 // 📦 Bundle commands
-bot.onText(/\/bundle\s+(.+)/, async (msg, match) => {
+bot.onText(/\/bundle(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     if (!isAdmin(chatId)) return bot.sendMessage(chatId, "⛔ Unauthorized.", { parse_mode: 'Markdown' });
 
-    const args = match[1].split(/\s+/);
+    const args = match[1] ? match[1].split(/\s+/) : [];
     const action = args[0]?.toLowerCase();
 
     try {
