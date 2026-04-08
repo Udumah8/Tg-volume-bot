@@ -1,5 +1,4 @@
 // walletAging.js - Wallet Aging & Seasoning System
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
 // ─────────────────────────────────────────────
 // 🕐 Wallet Age Tiers Configuration
@@ -101,7 +100,7 @@ export class WalletAgingManager {
     /**
      * Initialize metadata for a wallet
      */
-    static initializeMetadata(wallet) {
+    static initializeMetadata() {
         const personality = this._assignPersonality();
         
         return {

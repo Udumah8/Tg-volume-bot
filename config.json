@@ -1,6 +1,6 @@
 {
   "tokenAddress": "7LpvxqijqTHHAYkyRA8mNarFezHHmQWXFNbGs8GW1ray",
-  "strategy": "SNIPER",
+  "strategy": "KOL_ALPHA_CALL",
   "minBuyAmount": 0.0001,
   "maxBuyAmount": 0.0002,
   "priorityFee": 0.0001,
@@ -17,7 +17,7 @@
   "useVolumeCurve": true,
   "volCurveIntensity": 1.2,
   "useWalletPool": true,
-  "fundAmountPerWallet": 0.005,
+  "fundAmountPerWallet": 0.002,
   "batchConcurrency": 1,
   "walletsPerCycle": 1,
   "useWebFunding": true,

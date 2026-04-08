@@ -160,7 +160,6 @@ export class SeasoningEngine {
      */
     static async quickSeason(wallets, connection, masterKeypair, swapFn, options = {}) {
         const {
-            activitiesPerWallet = 2,
             minAmount = 0.001,
             maxAmount = 0.005,
             tokenAddress = null, // Optional: specific token, or null to use liquid tokens

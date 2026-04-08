@@ -1,5 +1,5 @@
 // jito2.js
-import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair, Connection } from "@solana/web3.js";
+import { PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair } from "@solana/web3.js";
 import axios from "axios";
 import bs58 from "bs58";
 import fs from "fs";

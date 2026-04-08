@@ -1,10 +1,10 @@
 // walletManager.js
-import { Keypair, LAMPORTS_PER_SOL, Connection } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import bs58 from "bs58";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { WalletAgingManager, WALLET_AGE_TIERS } from "./walletAging.js";
+import { WalletAgingManager } from "./walletAging.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -169,7 +169,9 @@ export class WalletPool {
             try {
                 const tempFile = WALLETS_FILE + '.tmp';
                 if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-            } catch {}
+            } catch (e) {
+                // Silently ignore cleanup errors
+            }
         }
     }
 
@@ -596,7 +598,7 @@ export class WalletPool {
     async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2 }) {
         if (!wallets || !wallets.length) {
             console.warn('[WalletPool] fundWallets called with empty array');
-            return { completed: 0, successes, failures: 0, skipped: 0 };
+            return { completed: 0, successes: 0, failures: 0, skipped: 0 };
         }
 
         console.log(`[WalletPool] Scanning ${wallets.length} specific wallets for funding needs...`);
@@ -671,7 +673,7 @@ export class WalletPool {
      * Creates intermediate wallets to break direct on-chain link
      * @private
      */
-    async _fundWithMultiHop(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency, progressCb, checkRunning, hopDepth, skipped }) {
+    async _fundWithMultiHop(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, progressCb, checkRunning, hopDepth, skipped }) {
         const results = { completed: 0, successes: 0, failures: 0, skipped };
         
         for (const targetWallet of wallets) {
