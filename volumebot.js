@@ -714,6 +714,25 @@ function fetchWallets(count) {
     }
 }
 
+/**
+ * Validate wallets array and return error message if empty
+ */
+function validateWallets(wallets, chatId, mode = 'strategy') {
+    if (!wallets || wallets.length === 0) {
+        bot.sendMessage(chatId, formatErrorMessage(
+            'No Wallets Available',
+            `Unable to generate or load wallets for ${mode}`,
+            [
+                STATE.useWalletPool ? 'Create wallets: /createwallets 100' : 'Check ephemeral wallet generation',
+                'Verify wallet configuration',
+                'Check system resources'
+            ]
+        ), { parse_mode: 'Markdown' });
+        return false;
+    }
+    return true;
+}
+
 // ─────────────────────────────────────────────
 // 🔄 Universal Strategy Executor Template
 // ─────────────────────────────────────────────
@@ -754,6 +773,11 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
 
     const wallets = fetchWallets(walletCount);
     const isEphemeral = !STATE.useWalletPool;
+
+    // Validate we have wallets before proceeding
+    if (!validateWallets(wallets, chatId, name)) {
+        return { success: false, error: 'No wallets available' };
+    }
 
     // Show aging distribution for both pool and ephemeral (if aging enabled)
     if (walletManager.agingEnabled) {
@@ -1473,7 +1497,9 @@ async function executeJitoMevWash(chatId, connection) {
 async function executeKolAlphaCall(chatId, connection) {
     const swarmSize = STATE.useWalletPool ? Math.min(STATE.kolRetailSwarmSize, walletManager.size) : STATE.kolRetailSwarmSize;
 
-    const whaleWallet = fetchWallets(1)[0];
+    const whaleArr = fetchWallets(1);
+    if (!validateWallets(whaleArr, chatId, 'KOL Alpha')) return;
+    const whaleWallet = whaleArr[0];
     const whaleAmt = parseFloat((getRandomFloat(STATE.maxBuyAmount * 2, STATE.maxBuyAmount * 5)).toFixed(4));
     
     if (!STATE.useWalletPool) {
@@ -1485,6 +1511,7 @@ async function executeKolAlphaCall(chatId, connection) {
     await sleep(2000);
 
     const swarmWallets = fetchWallets(swarmSize);
+    if (!validateWallets(swarmWallets, chatId, 'KOL Swarm')) return;
     if (!STATE.useWalletPool) {
         bot.sendMessage(chatId, `🐟 Funding ${swarmSize} retail wallets...`, { parse_mode: 'Markdown' });
         await walletManager.fundWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.minBuyAmount + 0.005, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
@@ -1514,7 +1541,9 @@ async function executeKolAlphaCall(chatId, connection) {
 // 🐻 Strategy: Bull Trap
 async function executeBullTrap(chatId, connection) {
     bot.sendMessage(chatId, `🐻 *Bull Trap*\nFake breakout → stealth dump`, { parse_mode: 'Markdown' });
-    const trapWallet = fetchWallets(1)[0];
+    const trapArr = fetchWallets(1);
+    if (!validateWallets(trapArr, chatId, 'Bull Trap')) return;
+    const trapWallet = trapArr[0];
     if (!STATE.useWalletPool) await walletManager.fundWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet + 0.01, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
 
     const steps = Math.floor(getRandomFloat(4, 7));
@@ -1591,6 +1620,8 @@ async function executeLadderStrategy(chatId, connection) {
 async function executeSniperStrategy(chatId, connection) {
     bot.sendMessage(chatId, `⚡ *SNIPER MODE* — Fast entry + staged exits`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
+    
+    if (!validateWallets(wallets, chatId, 'Sniper')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1619,6 +1650,7 @@ async function executeSniperStrategy(chatId, connection) {
 async function executeAdvWashStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🔄 *ADVANCED WASH* — Circular wash with ${STATE.washGroupCount} groups`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
+    if (!validateWallets(wallets, chatId, 'Advanced Wash')) return;
     const groupSize = Math.floor(wallets.length / STATE.washGroupCount);
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
@@ -1645,6 +1677,7 @@ async function executeAdvWashStrategy(chatId, connection) {
 async function executeMirrorWhaleStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🐳 *MIRROR WHALE* — Copying top holders in real-time`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
+    if (!validateWallets(wallets, chatId, 'Mirror Whale')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1673,6 +1706,7 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
 async function executeCurvePumpStrategy(chatId, connection) {
     bot.sendMessage(chatId, `📈 *CURVE PUMP* — Pushing bonding curve to ${STATE.curveTargetPercent}%`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
+    if (!validateWallets(wallets, chatId, 'Curve Pump')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1722,6 +1756,7 @@ async function executeBundleBuySell(chatId, connection, bundleId = null) {
 
     // Phase 1: BUNDLE BUYING
     const wallets = fetchWallets(targetWallets);
+    if (!validateWallets(wallets, chatId, 'Bundle')) return { success: false, error: 'No wallets available' };
     const isEphemeral = !STATE.useWalletPool;
 
     // Fund wallets if ephemeral
