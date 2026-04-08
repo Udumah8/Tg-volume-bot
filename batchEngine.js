@@ -130,7 +130,6 @@ export class BatchSwapEngine {
 
                 // Check if bot is still running before proceeding
                 if (checkRunning && !checkRunning()) {
-                    console.debug(`[BatchEngine] Worker ${workerId} stopped: checkRunning returned false`);
                     break;
                 }
 
@@ -242,13 +241,15 @@ export class BatchSwapEngine {
         // Wait for all workers to complete
         await Promise.all(workers);
 
-        // Log final summary
-        const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
-        const successRate = total > 0 ? ((successes / total) * 100).toFixed(1) : 0;
-        console.log(
-            `[BatchSwapEngine] Batch complete: ${successes}/${total} succeeded ` +
-            `(${successRate}%), ${failures} failed in ${totalTime}s`
-        );
+        // Log final summary (suppress if no work was done)
+        if (completed > 0 || failures > 0) {
+            const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+            const successRate = total > 0 ? ((successes / total) * 100).toFixed(1) : 0;
+            console.log(
+                `[BatchSwapEngine] Batch complete: ${successes}/${total} succeeded ` +
+                `(${successRate}%), ${failures} failed in ${totalTime}s`
+            );
+        }
 
         return { completed, successes, failures, results };
     }
