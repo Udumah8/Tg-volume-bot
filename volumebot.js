@@ -4186,28 +4186,85 @@ bot.onText(/\/bundle\s+(.+)/, async (msg, match) => {
     try {
         if (action === 'buy' || action === 'start') {
             // Start a new bundle buy
-            if (!STATE.tokenAddress) return bot.sendMessage(chatId, `❌ Token not set.`, { parse_mode: 'Markdown' });
-            
-            const bundleId = args[1] || `bundle_${Date.now()}`;
-            const result = await executeBundleBuySell(chatId, getConnection(), bundleId);
-            
-            if (result.success) {
-                bot.sendMessage(chatId, 
-                    `✅ *Bundle Buy Complete!*\n\n🎫 ID: \`${result.bundleId}\`\n\n` +
-                    `Next: Use \`/bundle sell ${result.bundleId}\` when ready to sell.`,
+            if (!STATE.tokenAddress) {
+                return bot.sendMessage(chatId, 
+                    `❌ *Token not set*\n\n` +
+                    `Please set token CA in:\n⚙️ Settings → 📱 Basic → 🪙 Token CA`,
                     { parse_mode: 'Markdown' }
                 );
+            }
+            
+            const bundleId = args[1] || `bundle_${Date.now()}`;
+            
+            bot.sendMessage(chatId,
+                `📦 *Starting Bundle Buy*\n\n` +
+                `🎫 ID: \`${bundleId}\`\n` +
+                `🪙 Token: \`${STATE.tokenAddress.substring(0, 8)}...\`\n` +
+                `👥 Wallets: \`${STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle}\`\n` +
+                `💰 Range: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL\n\n` +
+                `⏳ Buying in progress...`,
+                { parse_mode: 'Markdown' }
+            );
+            
+            const result = await executeBundleBuySell(chatId, getConnection(), bundleId);
+            
+            if (result && result.success) {
+                bot.sendMessage(chatId, 
+                    `✅ *Bundle Buy Complete!*\n\n` +
+                    `🎫 Bundle ID: \`${result.bundleId}\`\n` +
+                    `👥 Wallets: ${result.wallets?.length || 'N/A'}\n\n` +
+                    `**Next Steps:**\n` +
+                    `1️⃣ Monitor positions: \`/bundle status ${result.bundleId}\`\n` +
+                    `2️⃣ Sell when ready: \`/bundle sell ${result.bundleId}\`\n` +
+                    `3️⃣ View P&L: \`/bundle status ${result.bundleId}\``,
+                    { parse_mode: 'Markdown' }
+                );
+            } else {
+                bot.sendMessage(chatId, `❌ Bundle buy failed or did not complete.`, { parse_mode: 'Markdown' });
             }
         }
         else if (action === 'sell') {
             // Start sell phase for a bundle
             const bundleId = args[1];
-            if (!bundleId) return bot.sendMessage(chatId, `❌ Usage: \`/bundle sell <bundleId>\``, { parse_mode: 'Markdown' });
+            if (!bundleId) {
+                return bot.sendMessage(chatId, 
+                    `❌ *Missing Bundle ID*\n\n` +
+                    `Usage: \`/bundle sell <bundleId>\`\n\n` +
+                    `Example: \`/bundle sell bundle_1234567890\``,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+            
+            const bundle = bundleManager.getBundle(bundleId);
+            if (!bundle) {
+                return bot.sendMessage(chatId, 
+                    `❌ *Bundle not found*\n\n` +
+                    `ID: \`${bundleId}\`\n\n` +
+                    `List bundles: \`/bundle list\``,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+            
+            bot.sendMessage(chatId,
+                `🔴 *Starting Bundle Sell*\n\n` +
+                `🎫 ID: \`${bundleId}\`\n` +
+                `Status: \`${bundle.status}\`\n\n` +
+                `⏳ Selling in progress...`,
+                { parse_mode: 'Markdown' }
+            );
             
             const result = await executeBundleSell(chatId, bundleId);
-            if (result.success) {
+            if (result && result.success) {
+                const stats = result.stats;
                 bot.sendMessage(chatId, 
-                    `✅ *Bundle Sell Complete!*\n\n🎫 ID: \`${bundleId}\``,
+                    `✅ *Bundle Sell Complete!*\n\n` +
+                    `🎫 Bundle ID: \`${bundleId}\`\n\n` +
+                    `*Summary:*\n` +
+                    `Sold: \`${stats.sellPhase.totalSold.toFixed(6)}\` tokens\n` +
+                    `Received: \`${stats.sellPhase.totalReceived.toFixed(4)}\` SOL\n\n` +
+                    `*P&L:*\n` +
+                    `Profit/Loss: \`${stats.profitability.profitLoss.toFixed(4)}\` SOL\n` +
+                    `ROI: \`${stats.profitability.profitPercent}%\``,
                     { parse_mode: 'Markdown' }
                 );
             }
@@ -4215,51 +4272,64 @@ bot.onText(/\/bundle\s+(.+)/, async (msg, match) => {
         else if (action === 'status') {
             // Show details about a bundle
             const bundleId = args[1];
+            
             if (!bundleId) {
                 // List all bundles
                 const bundles = bundleManager.getAllBundles();
-                if (bundles.length === 0) {
-                    return bot.sendMessage(chatId, `📦 No bundles yet.`, { parse_mode: 'Markdown' });
+                if (!bundles || bundles.length === 0) {
+                    return bot.sendMessage(chatId, 
+                        `📦 *No Bundles Yet*\n\n` +
+                        `Start bundle: \`/bundle buy\``,
+                        { parse_mode: 'Markdown' }
+                    );
                 }
                 
-                let msg = `📦 *Active Bundles*\n\n`;
+                let msg = `📦 *Active Bundles*\n━━━━━━━━━━━━━━━━━\n\n`;
+                let count = 0;
                 for (const b of bundles) {
-                    msg += `🎫 \`${b.id}\`\n`;
-                    msg += `Status: **${b.status}**\n`;
-                    msg += `Wallets: ${b.wallets} | Bought: ${b.bought.toFixed(6)} | Sold: ${b.sold.toFixed(6)}\n`;
-                    msg += `Created: <t:${Math.floor(b.createdAt/1000)}:R>\n\n`;
+                    const status = b.status === 'COMPLETED' ? '✅' : 
+                                   b.status === 'SELLING' ? '🔴' : 
+                                   b.status === 'BUYING' ? '🟢' : '⏸️';
+                    msg += `${status} \`${b.id}\`\n`;
+                    msg += `Status: ${b.status}\n`;
+                    if (count++ < 10) msg += `\n`;
                 }
+                
                 bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
             } else {
                 // Show details for specific bundle
                 const stats = bundleManager.getBundleStats(bundleId);
-                if (!stats) return bot.sendMessage(chatId, `❌ Bundle not found: \`${bundleId}\``, { parse_mode: 'Markdown' });
+                if (!stats) {
+                    return bot.sendMessage(chatId, 
+                        `❌ *Bundle not found*\n\n` +
+                        `ID: \`${bundleId}\`\n\n` +
+                        `List bundles: \`/bundle list\``,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
                 
-                let msg = `📦 *Bundle Details*\n\n`;
+                const statusEmoji = stats.status === 'COMPLETED' ? '✅' : 
+                                   stats.status === 'SELLING' ? '🔴' : 
+                                   stats.status === 'BUYING' ? '🟢' : '⏸️';
+                
+                let msg = `📦 *Bundle Status*\n━━━━━━━━━━━━━━━━━\n\n`;
                 msg += `🎫 ID: \`${stats.bundleId}\`\n`;
-                msg += `Status: **${stats.status}**\n`;
-                msg += `Created: <t:${Math.floor(stats.createdAt/1000)}:R>\n\n`;
+                msg += `${statusEmoji} Status: **${stats.status}**\n\n`;
                 
-                msg += `*Buy Phase:*\n`;
-                msg += `Wallets: ${stats.buyPhase.walletCount}\n`;
-                msg += `Tokens: ${stats.buyPhase.totalBought.toFixed(6)}\n`;
-                msg += `Cost: ${stats.buyPhase.totalSpent.toFixed(4)} SOL\n`;
-                msg += `Success: ${stats.buyPhase.success}/${stats.buyPhase.walletCount}\n`;
-                if (stats.buyPhase.duration) msg += `Duration: ${stats.buyPhase.duration}s\n`;
+                msg += `*🟢 Buy Phase:*\n`;
+                msg += `Wallets: \`${stats.buyPhase.walletCount}\`\n`;
+                msg += `Tokens: \`${stats.buyPhase.totalBought.toFixed(6)}\`\n`;
+                msg += `Cost: \`${stats.buyPhase.totalSpent.toFixed(4)}\` SOL\n`;
+                msg += `Success: \`${stats.buyPhase.success}/${stats.buyPhase.walletCount}\`\n\n`;
                 
-                msg += `\n*Sell Phase:*\n`;
-                msg += `Sold: ${stats.sellPhase.totalSold.toFixed(6)} tokens\n`;
-                msg += `Received: ${stats.sellPhase.totalReceived.toFixed(4)} SOL\n`;
-                msg += `Success: ${stats.sellPhase.success}/${stats.buyPhase.walletCount}\n`;
-                if (stats.sellPhase.duration) msg += `Duration: ${stats.sellPhase.duration}s\n`;
+                msg += `*🔴 Sell Phase:*\n`;
+                msg += `Sold: \`${stats.sellPhase.totalSold.toFixed(6)}\` tokens\n`;
+                msg += `Received: \`${stats.sellPhase.totalReceived.toFixed(4)}\` SOL\n`;
+                msg += `Success: \`${stats.sellPhase.success}/${stats.buyPhase.walletCount}\`\n\n`;
                 
-                msg += `\n*Positions:*\n`;
-                msg += `Total Remaining: ${stats.positions.totalRemaining.toFixed(6)} tokens\n`;
-                msg += `Avg Per Wallet: ${stats.positions.avgPerWallet.toFixed(6)}\n`;
-                
-                msg += `\n*Profitability:*\n`;
-                msg += `Profit/Loss: ${stats.profitability.profitLoss.toFixed(4)} SOL\n`;
-                msg += `ROI: ${stats.profitability.roi}%\n`;
+                msg += `*📊 P&L:*\n`;
+                msg += `Profit/Loss: \`${stats.profitability.profitLoss.toFixed(4)}\` SOL\n`;
+                msg += `ROI: \`${stats.profitability.profitPercent}%\``;
                 
                 bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
             }
@@ -4267,39 +4337,73 @@ bot.onText(/\/bundle\s+(.+)/, async (msg, match) => {
         else if (action === 'list') {
             // List all bundles with summary
             const bundles = bundleManager.getAllBundles();
-            if (bundles.length === 0) {
-                return bot.sendMessage(chatId, `📦 No bundles yet.`, { parse_mode: 'Markdown' });
+            if (!bundles || bundles.length === 0) {
+                return bot.sendMessage(chatId, 
+                    `📦 *No Bundles*\n\n` +
+                    `Start one: \`/bundle buy\``,
+                    { parse_mode: 'Markdown' }
+                );
             }
             
-            let msg = `📦 *All Bundles*\n\n`;
+            let msg = `📦 *All Bundles*\n━━━━━━━━━━━━━━━━━\n\n`;
             for (const b of bundles) {
-                msg += `🎫 \`${b.id}\`\n`;
-                msg += `Status: ${b.status} | Wallets: ${b.wallets} | Remaining: ${b.remaining.toFixed(6)}\n\n`;
+                const icon = b.status === 'COMPLETED' ? '✅' : 
+                            b.status === 'SELLING' ? '🔴' : 
+                            b.status === 'BUYING' ? '🟢' : '⏸️';
+                msg += `${icon} \`${b.id}\`\n`;
+                msg += `Status: ${b.status}\n\n`;
             }
+            
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         }
         else if (action === 'cancel') {
             // Cancel a bundle
             const bundleId = args[1];
-            if (!bundleId) return bot.sendMessage(chatId, `❌ Usage: \`/bundle cancel <bundleId>\``, { parse_mode: 'Markdown' });
+            if (!bundleId) {
+                return bot.sendMessage(chatId, 
+                    `❌ *Missing Bundle ID*\n\n` +
+                    `Usage: \`/bundle cancel <bundleId>\``,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+            
+            const bundle = bundleManager.getBundle(bundleId);
+            if (!bundle) {
+                return bot.sendMessage(chatId, `❌ Bundle not found: \`${bundleId}\``, { parse_mode: 'Markdown' });
+            }
             
             bundleManager.cancelBundle(bundleId, 'User cancelled');
-            bot.sendMessage(chatId, `✅ Bundle cancelled: \`${bundleId}\``, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, 
+                `✅ *Bundle Cancelled*\n\n` +
+                `🎫 ID: \`${bundleId}\`\n` +
+                `Reason: User cancelled`,
+                { parse_mode: 'Markdown' }
+            );
         }
         else {
             bot.sendMessage(chatId,
-                `📦 *Bundle Buy & Sell Commands*\n\n` +
-                `\`/bundle buy [id]\` - Start bundle buy phase\n` +
-                `\`/bundle sell <id>\` - Execute bundle sell phase\n` +
-                `\`/bundle status [id]\` - Show bundle details\n` +
+                `📦 *Bundle Buy & Sell System*\n━━━━━━━━━━━━━━━━━\n\n` +
+                `**Commands:**\n\n` +
+                `\`/bundle buy [id]\` - Start coordinated buy\n` +
+                `\`/bundle sell <id>\` - Execute sells\n` +
+                `\`/bundle status [id]\` - View details\n` +
                 `\`/bundle list\` - List all bundles\n` +
-                `\`/bundle cancel <id>\` - Cancel a bundle`,
+                `\`/bundle cancel <id>\` - Cancel bundle\n\n` +
+                `**Example:**\n` +
+                `\`/bundle buy my_bundle\`\n` +
+                `\`/bundle status my_bundle\`\n` +
+                `\`/bundle sell my_bundle\``,
                 { parse_mode: 'Markdown' }
             );
         }
     } catch (error) {
         logger.error(`Bundle command error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Error: ${error.message}`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, 
+            `❌ *Bundle Error*\n\n` +
+            `${error.message}\n\n` +
+            `Check logs for details.`,
+            { parse_mode: 'Markdown' }
+        );
     }
 });
 
