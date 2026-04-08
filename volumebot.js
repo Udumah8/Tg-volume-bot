@@ -51,6 +51,8 @@ let isShuttingDown = false;
 let activeStrategy = null;
 const lastCommandTime = new Map();
 let globalWalletManager = null;
+let lastRpcCallTime = Date.now();
+const RPC_CALL_DELAY_MS = 100; // Minimum 100ms between RPC calls to avoid 429 errors
 
 // 📦 Bundle Manager for coordinated buy/sell operations
 const bundleManager = new BundleManager();
@@ -560,6 +562,13 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
     const maxRetries = 3;
     let lastError;
     const shortKey = keypair.publicKey.toBase58().substring(0, 8);
+
+    // Enforce RPC rate limiting to avoid 429 errors
+    const timeSinceLastCall = Date.now() - lastRpcCallTime;
+    if (timeSinceLastCall < RPC_CALL_DELAY_MS) {
+        await sleep(RPC_CALL_DELAY_MS - timeSinceLastCall);
+    }
+    lastRpcCallTime = Date.now();
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
