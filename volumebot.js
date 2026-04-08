@@ -2191,23 +2191,37 @@ function formatStrategyStart(name, config = {}) {
 // ======================== TELEGRAM UI ========================
 function showMainMenu(chatId) {
     const statusIcon = STATE.running ? '🟢' : '🔴';
+    const tokenStatus = STATE.tokenAddress ? `✅ \`${STATE.tokenAddress.slice(0,8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
+    const strategyEmoji = {
+        'STANDARD': '🌐', 'MAKER': '📈', 'WEB_OF_ACTIVITY': '🕸️', 'SPAM': '⚡', 'PUMP_DUMP': '🚀',
+        'CHART_PATTERN': '📐', 'HOLDER_GROWTH': '👥', 'WHALE': '🐋', 'VOLUME_BOOST': '📊', 'TRENDING': '🔥',
+        'JITO_MEV_WASH': '🌪️', 'KOL_ALPHA_CALL': '📱', 'BULL_TRAP': '🐻', 'SOCIAL_PROOF_AIRDROP': '🎁',
+        'LADDER': '📊', 'SNIPER': '⚡', 'ADV_WASH': '🔄', 'MIRROR_WHALE': '🐳', 'CURVE_PUMP': '📈', 'BUNDLE_BUY_SELL': '📦'
+    };
+    const strat = strategyEmoji[STATE.strategy] || '🎯';
+    
     bot.sendMessage(chatId,
-        `╔═══════════════════════╗\n` +
-        `║  🤖 *Volume Bot v3.2*  ║\n` +
-        `╚═══════════════════════╝\n\n` +
-        `⚡ *Status:* ${statusIcon} ${STATE.running ? 'RUNNING' : 'IDLE'}\n` +
-        `🎯 *Strategy:* \`${STATE.strategy}\`\n` +
+        `╔════════════════════════════════╗\n` +
+        `║   🤖 *VOLUME BOT v3.2*         ║\n` +
+        `╚════════════════════════════════╝\n\n` +
+        `${statusIcon} *Engine:* ${STATE.running ? 'RUNNING 🔴' : 'IDLE ⚫'}\n` +
+        `${strat} *Strategy:* \`${STATE.strategy}\`\n` +
         `💼 *Pool:* \`${walletManager.size.toLocaleString()}\` wallets\n` +
-        `🪙 *Token:* ${STATE.tokenAddress ? '✅ Set' : '❌ Not Set'}\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━`,
+        `🪙 *Token:* ${tokenStatus}\n\n` +
+        `📊 *Quick Stats:*\n` +
+        `• Cycles: \`${STATE.numberOfCycles}\`\n` +
+        `• Buy Range: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL\n` +
+        `• Delay: \`${STATE.intervalBetweenActions / 1000}s\`\n` +
+        `• Jito: ${STATE.useJito ? '🟢' : '🔴'}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
         {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: (STATE.running ? '🛑 STOP' : '🚀 LAUNCH'), callback_data: (STATE.running ? 'stop_cycles' : 'start_cycles') }],
+                    [{ text: STATE.running ? '🛑 STOP ENGINE' : '⚡ LAUNCH ENGINE', callback_data: STATE.running ? 'stop_cycles' : 'start_cycles' }],
                     [{ text: '📈 Strategies', callback_data: 'strategies' }, { text: '⚙️ Settings', callback_data: 'settings' }],
                     [{ text: '💼 Wallet Pool', callback_data: 'wallet_pool' }, { text: '📊 Dashboard', callback_data: 'status' }],
-                    [{ text: '📜 My Wallet', callback_data: 'show_wallet' }, { text: '❓ Help', callback_data: 'help' }]
+                    [{ text: '📜 Wallet Info', callback_data: 'show_wallet' }, { text: '❓ Help', callback_data: 'help' }]
                 ]
             }
         }
@@ -2241,16 +2255,20 @@ function showStrategyMenu(chatId) {
 
 function showSettingsMenu(chatId) {
     bot.sendMessage(chatId,
-        `⚙️ *CONFIGURATION*\n━━━━━━━━━━━━━━━━━━━━━━━\n\nCategory:`,
+        `⚙️ *SETTINGS & CONFIGURATION*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `*📋 Trading Parameters:*\n` +
+        `Select a category to configure:\n\n` +
+        `*🎮 Quick Access:*`,
         {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '📱 Basic', callback_data: 'settings_basic' }, { text: '⚡ Advanced', callback_data: 'settings_advanced' }],
-                    [{ text: '🎯 Strategy', callback_data: 'settings_strat' }, { text: '🎭 Realism', callback_data: 'show_realism' }],
-                    [{ text: '🔌 Provider', callback_data: 'provider_settings' }, { text: '🛡️ Jito', callback_data: 'settings_jito' }],
-                    [{ text: '🕸️ Stealth', callback_data: 'stealth_settings' }, { text: '🧠 Smart Sell', callback_data: 'smart_sell_menu' }],
-                    [{ text: '« Back', callback_data: 'back_to_main' }]
+                    [{ text: '📱 Basic Settings', callback_data: 'settings_basic' }, { text: '⚡ Advanced', callback_data: 'settings_advanced' }],
+                    [{ text: '🎯 Strategy Config', callback_data: 'settings_strat' }, { text: '🎭 Realism Engine', callback_data: 'show_realism' }],
+                    [{ text: '🔌 Swap Provider', callback_data: 'provider_settings' }, { text: '🛡️ Jito & Security', callback_data: 'settings_jito' }],
+                    [{ text: '🕸️ Stealth Funding', callback_data: 'stealth_settings' }, { text: '🧠 Smart Sell AI', callback_data: 'smart_sell_menu' }],
+                    [{ text: '« Back to Main', callback_data: 'back_to_main' }]
                 ]
             }
         }
@@ -2358,8 +2376,9 @@ function showStrategySettings(chatId) {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
+                    [{ text: '⚙️ Configure Parameters', callback_data: 'config_strat' }],
                     [{ text: '🔄 Change Strategy', callback_data: 'settings_strat_select' }],
-                    [{ text: '« Back', callback_data: 'settings' }]
+                    [{ text: '« Back to Settings', callback_data: 'settings' }]
                 ]
             }
         }
@@ -2539,6 +2558,32 @@ function showConfigTrending(chatId) {
     );
 }
 
+function showTrendingModeMenu(chatId) {
+    const current = STATE.trendingMode;
+    const modes = [
+        ['VIRAL_PUMP', '🚀 Viral Pump', 'Exponential price increase'],
+        ['ORGANIC_GROWTH', '🌱 Organic Growth', 'Steady gradual increase'],
+        ['FOMO_WAVE', '🌊 FOMO Wave', 'Rapid surge with cooldowns'],
+        ['LIQUIDITY_LADDER', '📊 Liquidity Ladder', 'Step-by-step price climb']
+    ];
+    
+    bot.sendMessage(chatId,
+        `🔥 *SELECT TRENDING MODE*\n━━━━━━━━━━━━━━━━━━━━━━━\n\nCurrent: \`${current}\`\n\n*Modes:*`,
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
+            [{ text: (current === 'VIRAL_PUMP' ? '✅ ' : '') + modes[0][1], callback_data: 'config_trnd_mode_viral' }],
+            [{ text: modes[0][2], callback_data: 'none' }],
+            [{ text: (current === 'ORGANIC_GROWTH' ? '✅ ' : '') + modes[1][1], callback_data: 'config_trnd_mode_organic' }],
+            [{ text: modes[1][2], callback_data: 'none' }],
+            [{ text: (current === 'FOMO_WAVE' ? '✅ ' : '') + modes[2][1], callback_data: 'config_trnd_mode_fomo' }],
+            [{ text: modes[2][2], callback_data: 'none' }],
+            [{ text: (current === 'LIQUIDITY_LADDER' ? '✅ ' : '') + modes[3][1], callback_data: 'config_trnd_mode_ladder' }],
+            [{ text: modes[3][2], callback_data: 'none' }],
+            [{ text: '« Back', callback_data: 'back_trending_config' }]
+        ]}}
+    );
+}
+
+
 function showConfigJitoWash(chatId) {
     bot.sendMessage(chatId,
         `⚙️ *JITO MEV WASH CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
@@ -2679,14 +2724,22 @@ function showConfigBundle(chatId) {
 }
 
 function showBasicSettings(chatId) {
-    const tokenStatus = STATE.tokenAddress ? `\`${STATE.tokenAddress.slice(0, 8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
+    const tokenStatus = STATE.tokenAddress ? `✅ \`${STATE.tokenAddress.slice(0, 8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
     bot.sendMessage(chatId,
-        `📱 *BASIC CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🪙 *Token:* ${tokenStatus}\n` +
-        `💰 *Buy:* \`${STATE.minBuyAmount}\` - \`${STATE.maxBuyAmount}\` SOL\n` +
-        `🔁 *Cycles:* \`${STATE.numberOfCycles}\`\n` +
-        `⏱ *Delay:* \`${STATE.intervalBetweenActions / 1000}s\`\n` +
-        `🎲 *Jitter:* \`${STATE.jitterPercentage}%\``,
+        `📱 *BASIC TRADING SETTINGS*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `🪙 *Token Configuration:*\n` +
+        `• Status: ${tokenStatus}\n\n` +
+        `💰 *Buy Settings:*\n` +
+        `• Min Purchase: \`${STATE.minBuyAmount}\` SOL\n` +
+        `• Max Purchase: \`${STATE.maxBuyAmount}\` SOL\n\n` +
+        `🔄 *Cycle Control:*\n` +
+        `• Cycles: \`${STATE.numberOfCycles}\`\n` +
+        `• Interval: \`${STATE.intervalBetweenActions / 1000}s\`\n` +
+        `• Jitter: \`${STATE.jitterPercentage}%\` (randomness)\n\n` +
+        `📝 *How to Configure:*\n` +
+        `Tap a button below to modify that parameter`,
+
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2704,12 +2757,19 @@ function showBasicSettings(chatId) {
 
 function showAdvancedSettings(chatId) {
     bot.sendMessage(chatId,
-        `⚡ *Advanced Settings*\n\n` +
-        `• Priority Fee: \`${STATE.priorityFee}\` SOL\n` +
-        `• Slippage: \`${STATE.slippage}%\`\n` +
-        `• Batch Concurrency: \`${STATE.batchConcurrency}\`\n` +
-        `• Wallets/Cycle: \`${STATE.walletsPerCycle}\`\n` +
-        `• Sync Buys/Sells: \`${STATE.maxSimultaneousBuys}/${STATE.maxSimultaneousSells}\``,
+        `⚡ *ADVANCED TRADING SETTINGS*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `💸 *Gas & Execution:*\n` +
+        `• Priority Fee: \`${STATE.priorityFee}\` SOL (faster tx)\n` +
+        `• Slippage: \`${STATE.slippage}%\` (price tolerance)\n\n` +
+        `⚙️ *Performance Tuning:*\n` +
+        `• Batch Concurrency: \`${STATE.batchConcurrency}\` parallel tasks\n` +
+        `• Wallets/Cycle: \`${STATE.walletsPerCycle}\` active wallets\n\n` +
+        `🔄 *Transaction Synchronization:*\n` +
+        `• Buys: \`${STATE.maxSimultaneousBuys}\` simultaneous\n` +
+        `• Sells: \`${STATE.maxSimultaneousSells}\` simultaneous\n\n` +
+        `💡 *Tip:* Higher concurrency = faster but more gas costs`,
+
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2836,14 +2896,18 @@ function showDexMenu(chatId) {
 function showWalletPoolMenu(chatId) {
     const stats = walletManager.getStats?.() || { total: walletManager.size, firstFew: [] };
     const modeIcon = STATE.useWalletPool ? '🟢' : '🔴';
+    const statusBar = STATE.useWalletPool ? '█████░░░░' : '░░░░░░░░░░';
+    
     bot.sendMessage(chatId,
-        `💼 *WALLET MANAGER*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📊 *Total:* \`${stats.total.toLocaleString()}\`\n` +
-        `${modeIcon} *Mode:* ${STATE.useWalletPool ? 'ENABLED' : 'DISABLED'}\n` +
-        `⚡ *Concurrency:* \`${STATE.batchConcurrency}\`\n` +
-        `👥 *Per Cycle:* \`${STATE.walletsPerCycle}\`\n` +
-        `💵 *Fund Amt:* \`${STATE.fundAmountPerWallet}\` SOL\n` +
-        `${stats.total > 0 ? `\nSample: \`${stats.firstFew[0]}\`` : `\n⚠️ No wallets yet`}`,
+        `💼 *WALLET POOL MANAGEMENT*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `${modeIcon} *Status:* ${STATE.useWalletPool ? 'ACTIVE 🟢' : 'INACTIVE 🔴'} ${statusBar}\n\n` +
+        `📊 *Pool Statistics:*\n` +
+        `• Total Wallets: \`${stats.total.toLocaleString()}\`\n` +
+        `• Batch Size: \`${STATE.walletsPerCycle}\` wallets\n` +
+        `• Concurrency: \`${STATE.batchConcurrency}\` parallel\n` +
+        `• Fund Amount: \`${STATE.fundAmountPerWallet}\` SOL/wallet\n\n` +
+        `${stats.total > 0 ? `📝 *Sample Wallet:*\n\`${stats.firstFew[0]}\`` : `⚠️ *No wallets generated yet*\nCreate wallets to start trading`}`,
+
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -3013,6 +3077,7 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'settings_advanced') showAdvancedSettings(chatId);
     else if (action === 'settings_strat') showStrategySettings(chatId);
     else if (action === 'settings_strat_select') showStrategyMenu(chatId);
+    else if (action === 'config_strat') showStrategyConfig(chatId, STATE.strategy);
     else if (action === 'show_realism') showRealismMenu(chatId);
     else if (action === 'settings_jito') showJitoSettings(chatId);
     else if (action === 'stealth_settings') showStealthSettings(chatId);
@@ -3038,8 +3103,10 @@ bot.on('callback_query', async (callbackQuery) => {
         };
         STATE.strategy = stratMap[action] || 'STANDARD';
         saveConfig();
-        bot.sendMessage(chatId, `✅ Strategy Selected: *${STATE.strategy}*\n\nLoading configuration...`, { parse_mode: 'Markdown' });
-        showStrategyConfig(chatId, STATE.strategy);
+        // Just select the strategy, don't show configuration
+        // Configuration only happens in Settings > Strategy Config
+        bot.sendMessage(chatId, `✅ Strategy: *${STATE.strategy}*\n\n💡 To configure this strategy, go to:\nSettings → 🎯 Strategy Config`, { parse_mode: 'Markdown' });
+        showStrategyMenu(chatId);
     }
 
     // Strategy Config Handlers - STANDARD
@@ -3325,10 +3392,34 @@ bot.on('callback_query', async (callbackQuery) => {
         });
     }
     else if (action === 'config_trnd_mode') {
-        promptSetting(chatId, '🔥 Enter trending mode:', (val) => {
-            if (val.length > 0) { STATE.trendingMode = val; saveConfig(); bot.sendMessage(chatId, `✅ Mode set`); showConfigTrending(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
+        showTrendingModeMenu(chatId);
+    }
+    else if (action === 'config_trnd_mode_viral') {
+        STATE.trendingMode = 'VIRAL_PUMP';
+        saveConfig();
+        bot.sendMessage(chatId, `✅ Trending Mode: *🚀 Viral Pump*`, { parse_mode: 'Markdown' });
+        showConfigTrending(chatId);
+    }
+    else if (action === 'config_trnd_mode_organic') {
+        STATE.trendingMode = 'ORGANIC_GROWTH';
+        saveConfig();
+        bot.sendMessage(chatId, `✅ Trending Mode: *🌱 Organic Growth*`, { parse_mode: 'Markdown' });
+        showConfigTrending(chatId);
+    }
+    else if (action === 'config_trnd_mode_fomo') {
+        STATE.trendingMode = 'FOMO_WAVE';
+        saveConfig();
+        bot.sendMessage(chatId, `✅ Trending Mode: *🌊 FOMO Wave*`, { parse_mode: 'Markdown' });
+        showConfigTrending(chatId);
+    }
+    else if (action === 'config_trnd_mode_ladder') {
+        STATE.trendingMode = 'LIQUIDITY_LADDER';
+        saveConfig();
+        bot.sendMessage(chatId, `✅ Trending Mode: *📊 Liquidity Ladder*`, { parse_mode: 'Markdown' });
+        showConfigTrending(chatId);
+    }
+    else if (action === 'back_trending_config') {
+        showConfigTrending(chatId);
     }
     else if (action === 'config_trnd_intensity') {
         promptSetting(chatId, '⚡ Enter intensity level:', (val) => {
@@ -4064,6 +4155,10 @@ bot.on('callback_query', async (callbackQuery) => {
         saveConfig();
         bot.sendMessage(chatId, `🗑️ Dev wallet cleared. Smart Sell will now use random holder wallets.`, { parse_mode: 'Markdown' });
         showSmartSellMenu(chatId);
+    }
+    else if (action === 'none') {
+        // Silently ignore non-interactive buttons (descriptions, etc)
+        bot.answerCallbackQuery(callbackQuery.id).catch(() => { });
     }
     else {
         // Log unhandled callback actions for debugging
