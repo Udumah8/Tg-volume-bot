@@ -2975,29 +2975,44 @@ function showWalletAllocation(chatId) {
     const strategies = multiStrategyManager.getAllStrategies();
     const totalWallets = walletManager.size;
     let assignedWallets = 0;
+    let poolStrategies = 0;
+    let ephemeralStrategies = 0;
     
     let msg = `💼 *Wallet Allocation*\n━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `Total Wallets: \`${totalWallets}\`\n\n`;
+    msg += `Total Pool Wallets: \`${totalWallets}\`\n\n`;
     
     if (strategies.length === 0) {
         msg += `No strategies created yet.\n\n`;
     } else {
         strategies.forEach(s => {
             const strategy = multiStrategyManager.getStrategy(s.id);
-            const count = strategy.wallets.assigned.length;
-            assignedWallets += count;
-            msg += `*${s.name}*\n`;
-            msg += `Assigned: \`${count}\` | Active: \`${strategy.wallets.active.length}\`\n\n`;
+            const mode = strategy.config.useWalletPool ? 'Pool' : 'Ephemeral';
+            const modeIcon = strategy.config.useWalletPool ? '💼' : '🔄';
+            
+            if (strategy.config.useWalletPool) {
+                poolStrategies++;
+                const count = strategy.wallets.assigned.length;
+                assignedWallets += count;
+                msg += `${modeIcon} *${s.name}*\n`;
+                msg += `Mode: \`${mode}\` | Assigned: \`${count}\` | Active: \`${strategy.wallets.active.length}\`\n\n`;
+            } else {
+                ephemeralStrategies++;
+                msg += `${modeIcon} *${s.name}*\n`;
+                msg += `Mode: \`${mode}\` | Wallets: \`${strategy.config.walletCount || 50}\` (auto-generated)\n\n`;
+            }
         });
     }
     
-    msg += `Unassigned: \`${totalWallets - assignedWallets}\` wallets`;
+    msg += `━━━━━━━━━━━━━━━━━\n`;
+    msg += `Pool Strategies: \`${poolStrategies}\`\n`;
+    msg += `Ephemeral Strategies: \`${ephemeralStrategies}\`\n`;
+    msg += `Unassigned Pool Wallets: \`${totalWallets - assignedWallets}\``;
     
     bot.sendMessage(chatId, msg, {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🔄 Auto-Allocate', callback_data: 'multi_auto_allocate' }],
+                [{ text: '🔄 Auto-Allocate Pool Wallets', callback_data: 'multi_auto_allocate' }],
                 [{ text: '🔙 Back', callback_data: 'multi_main' }]
             ]
         }
@@ -3261,32 +3276,49 @@ function handleMultiStrategyConfigSetting(chatId, strategyId, settingType) {
             break;
             
         case 'provider':
-            bot.sendMessage(chatId, '🔌 Select swap provider:', {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Solana Tracker', callback_data: `multi_prov_${strategyId}_SOLANA_TRACKER` }],
-                        [{ text: 'Jupiter', callback_data: `multi_prov_${strategyId}_JUPITER` }],
-                        [{ text: 'Raydium', callback_data: `multi_prov_${strategyId}_RAYDIUM` }],
-                        [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
-                    ]
+            const currentProvider = strategy.config.swapProvider || 'SOLANA_TRACKER';
+            bot.sendMessage(chatId, 
+                `🔌 *Swap Provider*\nCurrent: *${currentProvider}*\nDEX: \`${strategy.config.targetDex}\``,
+                {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{ text: (currentProvider === 'SOLANA_TRACKER' ? '✅ ' : '') + '🌐 SolanaTracker', callback_data: `multi_prov_${strategyId}_SOLANA_TRACKER` }],
+                            [{ text: (currentProvider === 'SOLANA_TRADE' ? '✅ ' : '') + '🎯 SolanaTrade', callback_data: `multi_prov_${strategyId}_SOLANA_TRADE` }],
+                            [{ text: '🎯 Select DEX', callback_data: `multi_cfg_dex_${strategyId}` }],
+                            [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
+                        ]
+                    }
                 }
-            });
+            );
             break;
             
         case 'dex':
-            bot.sendMessage(chatId, '🎯 Select target DEX:', {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Raydium AMM', callback_data: `multi_dex_${strategyId}_RAYDIUM_AMM` }],
-                        [{ text: 'Raydium CLMM', callback_data: `multi_dex_${strategyId}_RAYDIUM_CLMM` }],
-                        [{ text: 'Pump.fun', callback_data: `multi_dex_${strategyId}_PUMP_FUN` }],
-                        [{ text: 'Orca', callback_data: `multi_dex_${strategyId}_ORCA_WHIRLPOOL` }],
-                        [{ text: 'Meteora DLMM', callback_data: `multi_dex_${strategyId}_METEORA_DLMM` }],
-                        [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
-                    ]
+            const currentDex = strategy.config.targetDex || 'RAYDIUM_AMM';
+            const dexes = [
+                ['PUMP_FUN', 'Pump.fun'], ['PUMP_SWAP', 'Pump Swap'],
+                ['RAYDIUM_AMM', 'Raydium AMM'], ['RAYDIUM_CLMM', 'Raydium CLMM'],
+                ['RAYDIUM_CPMM', 'Raydium CPMM'], ['RAYDIUM_LAUNCHPAD', 'Raydium Launch'],
+                ['ORCA_WHIRLPOOL', 'Orca Whirlpool'], ['METEORA_DLMM', 'Meteora DLMM'],
+                ['METEORA_DAMM_V1', 'Meteora V1'], ['METEORA_DAMM_V2', 'Meteora V2'],
+                ['METEORA_DBC', 'Meteora DBC'], ['MOONIT', 'Moonit'],
+                ['HEAVEN', 'Heaven'], ['SUGAR', 'Sugar'], ['BOOP_FUN', 'Boop.fun']
+            ];
+            const keyboard = [];
+            for (let i = 0; i < dexes.length; i += 2) {
+                const row = [];
+                const [val1, label1] = dexes[i];
+                row.push({ text: (currentDex === val1 ? '✅ ' : '') + label1, callback_data: `multi_dex_${strategyId}_${val1}` });
+                if (i + 1 < dexes.length) {
+                    const [val2, label2] = dexes[i + 1];
+                    row.push({ text: (currentDex === val2 ? '✅ ' : '') + label2, callback_data: `multi_dex_${strategyId}_${val2}` });
                 }
+                keyboard.push(row);
+            }
+            keyboard.push([{ text: '🔙 Back', callback_data: `multi_cfg_provider_${strategyId}` }]);
+            bot.sendMessage(chatId, `🎯 *Target DEX*\nCurrent: *${currentDex}*`, {
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: keyboard }
             });
             break;
             
@@ -3355,30 +3387,63 @@ async function startMultiStrategy(chatId, strategyId) {
             return bot.sendMessage(chatId, `❌ Strategy not found`, { parse_mode: 'Markdown' });
         }
         
-        // Auto-assign wallets if none assigned
-        if (strategy.wallets.assigned.length === 0) {
-            const totalWallets = walletManager.size;
-            const strategies = multiStrategyManager.getAllStrategies();
-            const walletsPerStrategy = Math.floor(totalWallets / (strategies.length + 1));
-            
-            // Find unassigned wallets
-            const assignedPubkeys = new Set();
-            for (const s of strategies) {
-                const strat = multiStrategyManager.getStrategy(s.id);
-                strat.wallets.assigned.forEach(w => assignedPubkeys.add(w));
+        // Check wallet mode and handle accordingly
+        if (strategy.config.useWalletPool) {
+            // Wallet Pool Mode: Need assigned wallets
+            if (strategy.wallets.assigned.length === 0) {
+                const totalWallets = walletManager.size;
+                
+                if (totalWallets === 0) {
+                    return bot.sendMessage(chatId, 
+                        `❌ *No Wallets in Pool*\n\n` +
+                        `Generate wallets first:\n` +
+                        `Main Menu → 💼 Wallet Pool → 🔨 Generate`,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
+                
+                const strategies = multiStrategyManager.getAllStrategies();
+                const walletsPerStrategy = Math.floor(totalWallets / (strategies.length + 1));
+                
+                // Find unassigned wallets
+                const assignedPubkeys = new Set();
+                for (const s of strategies) {
+                    const strat = multiStrategyManager.getStrategy(s.id);
+                    if (strat && strat.wallets) {
+                        strat.wallets.assigned.forEach(w => assignedPubkeys.add(w));
+                    }
+                }
+                
+                const unassignedWallets = walletManager.allWallets
+                    .filter(w => !assignedPubkeys.has(w.publicKey.toBase58()))
+                    .slice(0, Math.min(walletsPerStrategy, strategy.config.walletCount || 50))
+                    .map(w => w.publicKey.toBase58());
+                
+                if (unassignedWallets.length === 0) {
+                    return bot.sendMessage(chatId, 
+                        `❌ *No Unassigned Wallets*\n\n` +
+                        `All wallets are assigned to other strategies.\n\n` +
+                        `Options:\n` +
+                        `• Generate more wallets\n` +
+                        `• Use wallet allocation menu\n` +
+                        `• Switch to Ephemeral mode`,
+                        { parse_mode: 'Markdown' }
+                    );
+                }
+                
+                multiStrategyManager.assignWallets(strategyId, unassignedWallets);
+                bot.sendMessage(chatId, 
+                    `✅ Auto-assigned ${unassignedWallets.length} wallets from pool`,
+                    { parse_mode: 'Markdown' }
+                );
             }
-            
-            const unassignedWallets = walletManager.allWallets
-                .filter(w => !assignedPubkeys.has(w.publicKey.toBase58()))
-                .slice(0, Math.min(walletsPerStrategy, 50))
-                .map(w => w.publicKey.toBase58());
-            
-            if (unassignedWallets.length === 0) {
-                return bot.sendMessage(chatId, `❌ No unassigned wallets available. Use wallet allocation menu.`, { parse_mode: 'Markdown' });
-            }
-            
-            multiStrategyManager.assignWallets(strategyId, unassignedWallets);
-            bot.sendMessage(chatId, `✅ Auto-assigned ${unassignedWallets.length} wallets`, { parse_mode: 'Markdown' });
+        } else {
+            // Ephemeral Mode: Wallets will be generated during execution
+            bot.sendMessage(chatId, 
+                `🔄 *Ephemeral Mode*\n\n` +
+                `${strategy.config.walletCount || 50} temporary wallets will be generated and funded automatically.`,
+                { parse_mode: 'Markdown' }
+            );
         }
         
         // Start strategy execution
@@ -3386,7 +3451,14 @@ async function startMultiStrategy(chatId, strategyId) {
             return executeMultiStrategyInstance(strategy, chatId);
         });
         
-        bot.sendMessage(chatId, `▶️ Strategy *${strategy.name}* started!`, { parse_mode: 'Markdown' });
+        const modeText = strategy.config.useWalletPool ? 'Pool' : 'Ephemeral';
+        bot.sendMessage(chatId, 
+            `▶️ *Strategy Started*\n\n` +
+            `${strategy.name}\n` +
+            `Mode: \`${modeText}\`\n` +
+            `Wallets: \`${strategy.config.useWalletPool ? strategy.wallets.assigned.length : strategy.config.walletCount}\``,
+            { parse_mode: 'Markdown' }
+        );
         showStrategyDetails(chatId, strategyId);
     } catch (error) {
         logger.error(`[MultiStrategy] Start error: ${error.message}`);
@@ -3450,11 +3522,47 @@ function autoAllocateWallets(chatId) {
             return bot.sendMessage(chatId, `❌ No strategies to allocate wallets to`, { parse_mode: 'Markdown' });
         }
         
+        // Filter strategies that use wallet pool mode
+        const poolStrategies = strategies.filter(s => {
+            const strat = multiStrategyManager.getStrategy(s.id);
+            return strat && strat.config.useWalletPool;
+        });
+        
+        if (poolStrategies.length === 0) {
+            return bot.sendMessage(chatId, 
+                `ℹ️ *No Pool Mode Strategies*\n\n` +
+                `All strategies are in Ephemeral mode.\n` +
+                `Ephemeral strategies don't need wallet allocation.`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        
         const totalWallets = walletManager.size;
-        const walletsPerStrategy = Math.floor(totalWallets / strategies.length);
+        if (totalWallets === 0) {
+            return bot.sendMessage(chatId, 
+                `❌ *No Wallets in Pool*\n\n` +
+                `Generate wallets first:\n` +
+                `Main Menu → 💼 Wallet Pool → 🔨 Generate`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+        
+        const walletsPerStrategy = Math.floor(totalWallets / poolStrategies.length);
+        
+        if (walletsPerStrategy === 0) {
+            return bot.sendMessage(chatId, 
+                `❌ *Not Enough Wallets*\n\n` +
+                `Need at least ${poolStrategies.length} wallets for ${poolStrategies.length} strategies.\n` +
+                `Current pool: ${totalWallets} wallets`,
+                { parse_mode: 'Markdown' }
+            );
+        }
         
         let allocated = 0;
-        strategies.forEach((s, index) => {
+        let msg = `✅ *Auto-Allocation Complete*\n\n`;
+        
+        poolStrategies.forEach((s, index) => {
+            const strategy = multiStrategyManager.getStrategy(s.id);
             const startIndex = index * walletsPerStrategy;
             const endIndex = Math.min(startIndex + walletsPerStrategy, totalWallets);
             
@@ -3464,15 +3572,19 @@ function autoAllocateWallets(chatId) {
             
             multiStrategyManager.assignWallets(s.id, wallets);
             allocated += wallets.length;
+            
+            msg += `${strategy.name}: \`${wallets.length}\` wallets\n`;
         });
         
-        bot.sendMessage(chatId,
-            `✅ *Auto-Allocation Complete*\n\n` +
-            `Allocated ${allocated} wallets across ${strategies.length} strategies\n` +
-            `(~${walletsPerStrategy} wallets per strategy)`,
-            { parse_mode: 'Markdown' }
-        );
+        msg += `\nTotal: \`${allocated}\` wallets allocated`;
         
+        // Show ephemeral strategies info
+        const ephemeralCount = strategies.length - poolStrategies.length;
+        if (ephemeralCount > 0) {
+            msg += `\n\nℹ️ ${ephemeralCount} ephemeral ${ephemeralCount === 1 ? 'strategy' : 'strategies'} (no allocation needed)`;
+        }
+        
+        bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         showWalletAllocation(chatId);
     } catch (error) {
         logger.error(`[MultiStrategy] Auto-allocate error: ${error.message}`);
@@ -3619,14 +3731,107 @@ async function executeMultiStrategyInstance(strategy, chatId) {
     logger.info(`[MultiStrategy] Starting execution for ${strategy.name} (${strategy.id})`);
     
     const connection = getConnection();
-    const strategyWallets = strategy.wallets.assigned.map(pubkey => {
-        return walletManager.allWallets.find(w => w.publicKey.toBase58() === pubkey);
-    }).filter(w => w !== undefined);
+    let strategyWallets = [];
     
-    if (strategyWallets.length === 0) {
-        logger.error(`[MultiStrategy] No wallets found for strategy ${strategy.id}`);
-        multiStrategyManager.stopStrategy(strategy.id, 'No wallets available');
-        return;
+    // Handle wallet mode: Pool or Ephemeral
+    if (strategy.config.useWalletPool) {
+        // Wallet Pool Mode: Use assigned wallets from pool
+        strategyWallets = strategy.wallets.assigned.map(pubkey => {
+            return walletManager.allWallets.find(w => w.publicKey.toBase58() === pubkey);
+        }).filter(w => w !== undefined);
+        
+        if (strategyWallets.length === 0) {
+            logger.error(`[MultiStrategy] No wallets assigned for strategy ${strategy.id}`);
+            multiStrategyManager.stopStrategy(strategy.id, 'No wallets assigned');
+            if (chatId) {
+                bot.sendMessage(chatId, 
+                    `❌ *Strategy Failed*\n\n${strategy.name}: No wallets assigned\n\nUse wallet allocation menu to assign wallets.`,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+            return;
+        }
+        
+        logger.info(`[MultiStrategy] ${strategy.name} - Using ${strategyWallets.length} wallets from pool`);
+    } else {
+        // Ephemeral Mode: Generate temporary wallets
+        const walletCount = strategy.config.walletCount || 50;
+        
+        // Limit ephemeral wallets to prevent rate limiting and resource issues
+        const maxEphemeralWallets = 100;
+        const actualWalletCount = Math.min(walletCount, maxEphemeralWallets);
+        
+        if (walletCount > maxEphemeralWallets) {
+            logger.warn(`[MultiStrategy] ${strategy.name} - Wallet count ${walletCount} exceeds max ${maxEphemeralWallets}, using ${actualWalletCount}`);
+            if (chatId) {
+                bot.sendMessage(chatId, 
+                    `⚠️ Wallet count limited to ${maxEphemeralWallets} for ephemeral mode`,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+            }
+        }
+        
+        strategyWallets = walletManager.generateEphemeralWallets(actualWalletCount);
+        
+        if (!strategyWallets || strategyWallets.length === 0) {
+            logger.error(`[MultiStrategy] Failed to generate ephemeral wallets for strategy ${strategy.id}`);
+            multiStrategyManager.stopStrategy(strategy.id, 'Failed to generate wallets');
+            if (chatId) {
+                bot.sendMessage(chatId, 
+                    `❌ *Strategy Failed*\n\n${strategy.name}: Failed to generate ephemeral wallets`,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+            }
+            return;
+        }
+        
+        logger.info(`[MultiStrategy] ${strategy.name} - Generated ${strategyWallets.length} ephemeral wallets`);
+        
+        // Fund ephemeral wallets
+        logger.info(`[MultiStrategy] ${strategy.name} - Funding ${strategyWallets.length} ephemeral wallets...`);
+        
+        if (chatId) {
+            bot.sendMessage(chatId, 
+                `💰 Funding ${strategyWallets.length} ephemeral wallets...\nThis may take a few moments.`,
+                { parse_mode: 'Markdown' }
+            ).catch(err => logger.warn(`Failed to send funding message: ${err.message}`));
+        }
+        
+        // Limit concurrency for ephemeral wallet funding to avoid rate limits
+        const fundingConcurrency = Math.min(strategy.config.batchConcurrency || 5, 5);
+        
+        const fundResult = await walletManager.fundWallets(strategyWallets, {
+            connection,
+            masterKeypair,
+            sendSOLFn: sendSOL,
+            amountSOL: strategy.config.fundAmountPerWallet || 0.005,
+            concurrency: fundingConcurrency,
+            checkRunning: () => strategy.status === 'RUNNING',
+            useWebFunding: false, // Disable web funding for ephemeral to avoid complexity
+            stealthLevel: 0, // Direct funding for ephemeral wallets
+            hopDepth: 0
+        });
+        
+        if (!fundResult.success) {
+            logger.error(`[MultiStrategy] Failed to fund ephemeral wallets: ${fundResult.message}`);
+            multiStrategyManager.stopStrategy(strategy.id, 'Wallet funding failed');
+            if (chatId) {
+                bot.sendMessage(chatId, 
+                    `❌ *Strategy Failed*\n\n${strategy.name}: Wallet funding failed\n${fundResult.message}`,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+            }
+            return;
+        }
+        
+        logger.info(`[MultiStrategy] ${strategy.name} - Funded ${fundResult.funded}/${strategyWallets.length} wallets`);
+        
+        if (chatId) {
+            bot.sendMessage(chatId, 
+                `✅ Funded ${fundResult.funded} wallets successfully`,
+                { parse_mode: 'Markdown' }
+            ).catch(() => {});
+        }
     }
     
     try {
@@ -3716,25 +3921,73 @@ async function executeMultiStrategyInstance(strategy, chatId) {
             multiStrategyManager.stopStrategy(strategy.id, 'Completed all cycles');
             logger.info(`[MultiStrategy] ${strategy.name} completed successfully`);
             
+            // Drain ephemeral wallets if used
+            if (!strategy.config.useWalletPool && strategyWallets.length > 0) {
+                logger.info(`[MultiStrategy] ${strategy.name} - Draining ${strategyWallets.length} ephemeral wallets...`);
+                
+                if (chatId) {
+                    bot.sendMessage(chatId, 
+                        `🔄 Draining ephemeral wallets...`,
+                        { parse_mode: 'Markdown' }
+                    ).catch(() => {});
+                }
+                
+                try {
+                    // Use lower concurrency for draining to avoid rate limits
+                    const drainConcurrency = Math.min(strategy.config.batchConcurrency || 5, 5);
+                    
+                    await walletManager.drainWallets(strategyWallets, {
+                        connection,
+                        masterKeypair,
+                        sendSOLFn: sendSOL,
+                        concurrency: drainConcurrency,
+                        checkRunning: () => true
+                    });
+                    logger.info(`[MultiStrategy] ${strategy.name} - Ephemeral wallets drained successfully`);
+                } catch (error) {
+                    logger.error(`[MultiStrategy] ${strategy.name} - Failed to drain wallets: ${error.message}`);
+                    // Don't fail the strategy if draining fails
+                }
+            }
+            
             if (chatId) {
                 bot.sendMessage(chatId,
                     `✅ *Strategy Completed*\n\n` +
                     `${strategy.name} finished all ${strategy.config.numberOfCycles} cycles\n\n` +
+                    `Mode: \`${strategy.config.useWalletPool ? 'Wallet Pool' : 'Ephemeral'}\`\n` +
                     `Buys: ${strategy.stats.successfulBuys}/${strategy.stats.totalBuys}\n` +
                     `P&L: ${strategy.stats.profitLoss.toFixed(4)} SOL`,
                     { parse_mode: 'Markdown' }
-                );
+                ).catch(() => {});
             }
         }
     } catch (error) {
         logger.error(`[MultiStrategy] Execution error for ${strategy.name}: ${error.message}`);
         multiStrategyManager.stopStrategy(strategy.id, `Error: ${error.message}`);
         
+        // Drain ephemeral wallets on error
+        if (!strategy.config.useWalletPool && strategyWallets.length > 0) {
+            logger.info(`[MultiStrategy] ${strategy.name} - Draining wallets after error...`);
+            try {
+                const drainConcurrency = Math.min(strategy.config.batchConcurrency || 5, 5);
+                await walletManager.drainWallets(strategyWallets, {
+                    connection,
+                    masterKeypair,
+                    sendSOLFn: sendSOL,
+                    concurrency: drainConcurrency,
+                    checkRunning: () => true
+                });
+                logger.info(`[MultiStrategy] ${strategy.name} - Wallets drained after error`);
+            } catch (drainError) {
+                logger.error(`[MultiStrategy] Failed to drain wallets after error: ${drainError.message}`);
+            }
+        }
+        
         if (chatId) {
             bot.sendMessage(chatId,
                 `❌ *Strategy Error*\n\n${strategy.name}: ${error.message}`,
                 { parse_mode: 'Markdown' }
-            );
+            ).catch(() => {});
         }
     }
 }
@@ -3831,27 +4084,71 @@ bot.on('callback_query', async (callbackQuery) => {
     }
     else if (action.startsWith('multi_prov_')) {
         // Format: multi_prov_<strategyId>_<provider>
-        const parts = action.replace('multi_prov_', '').split('_');
-        const provider = parts.pop();
-        const strategyId = parts.join('_');
+        // Provider can be: SOLANA_TRACKER or SOLANA_TRADE
+        const withoutPrefix = action.replace('multi_prov_', '');
+        let strategyId, provider;
+        
+        // Check which provider it is
+        if (withoutPrefix.endsWith('_SOLANA_TRACKER')) {
+            provider = 'SOLANA_TRACKER';
+            strategyId = withoutPrefix.replace('_SOLANA_TRACKER', '');
+        } else if (withoutPrefix.endsWith('_SOLANA_TRADE')) {
+            provider = 'SOLANA_TRADE';
+            strategyId = withoutPrefix.replace('_SOLANA_TRADE', '');
+        } else {
+            // Fallback: last part is provider
+            const parts = withoutPrefix.split('_');
+            provider = parts.pop();
+            strategyId = parts.join('_');
+        }
+        
         try {
             multiStrategyManager.updateStrategyConfig(strategyId, { swapProvider: provider });
             bot.sendMessage(chatId, `✅ Provider set to ${provider}`);
-            showMultiStrategyConfig(chatId, strategyId);
+            // Show provider menu again to allow DEX selection
+            handleMultiStrategyConfigSetting(chatId, strategyId, 'provider');
         } catch (error) {
+            logger.error(`[MultiStrategy] Provider update error: ${error.message}, strategyId: ${strategyId}, provider: ${provider}`);
             bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
         }
     }
     else if (action.startsWith('multi_dex_')) {
         // Format: multi_dex_<strategyId>_<dex>
-        const parts = action.replace('multi_dex_', '').split('_');
-        const dex = parts.pop();
-        const strategyId = parts.join('_');
+        // DEX names can have underscores (e.g., RAYDIUM_AMM, ORCA_WHIRLPOOL, etc.)
+        const withoutPrefix = action.replace('multi_dex_', '');
+        
+        // List of all possible DEX values
+        const dexOptions = [
+            'PUMP_FUN', 'PUMP_SWAP', 'RAYDIUM_AMM', 'RAYDIUM_CLMM', 'RAYDIUM_CPMM',
+            'RAYDIUM_LAUNCHPAD', 'ORCA_WHIRLPOOL', 'METEORA_DLMM', 'METEORA_DAMM_V1',
+            'METEORA_DAMM_V2', 'METEORA_DBC', 'MOONIT', 'HEAVEN', 'SUGAR', 'BOOP_FUN'
+        ];
+        
+        let strategyId, dex;
+        
+        // Find which DEX it ends with
+        for (const dexOption of dexOptions) {
+            if (withoutPrefix.endsWith('_' + dexOption)) {
+                dex = dexOption;
+                strategyId = withoutPrefix.replace('_' + dexOption, '');
+                break;
+            }
+        }
+        
+        if (!dex) {
+            // Fallback: last part is DEX
+            const parts = withoutPrefix.split('_');
+            dex = parts.pop();
+            strategyId = parts.join('_');
+        }
+        
         try {
             multiStrategyManager.updateStrategyConfig(strategyId, { targetDex: dex });
             bot.sendMessage(chatId, `✅ DEX set to ${dex}`);
-            showMultiStrategyConfig(chatId, strategyId);
+            // Return to provider menu
+            handleMultiStrategyConfigSetting(chatId, strategyId, 'provider');
         } catch (error) {
+            logger.error(`[MultiStrategy] DEX update error: ${error.message}, strategyId: ${strategyId}, dex: ${dex}`);
             bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
         }
     }
