@@ -64,7 +64,6 @@ export class BatchSwapEngine {
     ) {
         // Validate inputs
         if (!Array.isArray(wallets) || wallets.length === 0) {
-            console.warn('[BatchSwapEngine] executeBatch called with empty or invalid wallets array');
             return { completed: 0, successes: 0, failures: 0, results: [] };
         }
         if (typeof actionFn !== 'function') {

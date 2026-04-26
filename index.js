@@ -13,7 +13,6 @@ import bs58 from "bs58";
 import TelegramBot from "node-telegram-bot-api";
 import winston from 'winston';
 
-
 // Helper to map UI DEX names to SolanaTrade market identifiers
 function mapMarket(targetDex) {
     if (!targetDex) return "RAYDIUM_AMM";
@@ -37,22 +36,18 @@ function mapMarket(targetDex) {
 }
 
 // Import our modular components
-import { sendJitoBundle } from "./jito.js";
+import { sendJitoBundle, estimateJitoTip, isJitoErrorRetryable, JITO_TIP_ACCOUNTS } from "./jito.js";
 import WalletPool from "./walletManager.js";
 import { BatchSwapEngine } from "./batchEngine.js";
 import { SeasoningEngine } from "./seasoningEngine.js";
-import MultiStrategyManager from "./multiStrategyManager.js";
 
 // ─────────────────────────────────────────────
 // 🛡️ Global Safety Guards
 // ─────────────────────────────────────────────
 let isShuttingDown = false;
 let activeStrategy = null;
-const lastCommandTime = new Map();
+let lastCommandTime = new Map();
 let globalWalletManager = null;
-let lastRpcCallTime = Date.now();
-const RPC_CALL_DELAY_MS = 100; // Minimum 100ms between RPC calls to avoid 429 errors
-
 
 // ─────────────────────────────────────────────
 // 🔐 Graceful Shutdown Handler
@@ -282,12 +277,6 @@ const walletManager = new WalletPool();
 logger.info(`💼 Wallet Manager: ${walletManager.size.toLocaleString()} wallets loaded`);
 
 // ─────────────────────────────────────────────
-// 🎯 Multi-Strategy Manager Initialization
-// ─────────────────────────────────────────────
-const multiStrategyManager = new MultiStrategyManager();
-logger.info(`🎯 Multi-Strategy Manager: ${multiStrategyManager.strategies.size} strategies loaded`);
-
-// ─────────────────────────────────────────────
 // 👥 User Session Management
 // ─────────────────────────────────────────────
 const userSessions = new Map();
@@ -502,6 +491,55 @@ async function withStrategyLock(strategyName, fn, chatId) {
     finally { activeStrategy = null; }
 }
 
+/**
+ * Health check function to verify system readiness
+ * @returns {Promise<{healthy: boolean, issues: string[]}>}
+ */
+async function performHealthCheck() {
+    const issues = [];
+    
+    // Check master wallet
+    if (!masterKeypair) {
+        issues.push('Master wallet not loaded');
+    }
+    
+    // Check token address
+    if (!STATE.tokenAddress) {
+        issues.push('Token address not set');
+    }
+    
+    // Check RPC connectivity
+    try {
+        const connection = getConnection();
+        await connection.getSlot();
+    } catch (e) {
+        issues.push(`RPC connection failed: ${e.message}`);
+    }
+    
+    // Check wallet pool
+    if (STATE.useWalletPool && walletManager.size === 0) {
+        issues.push('Wallet pool is empty');
+    }
+    
+    // Check master wallet balance
+    if (masterKeypair) {
+        try {
+            const connection = getConnection();
+            const balance = await connection.getBalance(masterKeypair.publicKey) / LAMPORTS_PER_SOL;
+            if (balance < 0.01) {
+                issues.push(`Master wallet balance low: ${balance.toFixed(4)} SOL`);
+            }
+        } catch (e) {
+            issues.push(`Failed to check master wallet balance: ${e.message}`);
+        }
+    }
+    
+    return {
+        healthy: issues.length === 0,
+        issues
+    };
+}
+
 // ─────────────────────────────────────────────
 // 💸 SOL Transfer with Balance Check
 // ─────────────────────────────────────────────
@@ -519,7 +557,7 @@ async function sendSOL(connection, from, to, amountSOL) {
     );
 
     if (STATE.useJito) {
-        const { blockhash } = await connection.getLatestBlockhash('confirmed');
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
         tx.recentBlockhash = blockhash;
         tx.feePayer = from.publicKey;
         tx.sign(from);
@@ -565,13 +603,6 @@ async function swap(tokenIn, tokenOut, keypair, connection, amount, chatId, sile
     const maxRetries = 3;
     let lastError;
     const shortKey = keypair.publicKey.toBase58().substring(0, 8);
-
-    // Enforce RPC rate limiting to avoid 429 errors
-    const timeSinceLastCall = Date.now() - lastRpcCallTime;
-    if (timeSinceLastCall < RPC_CALL_DELAY_MS) {
-        await sleep(RPC_CALL_DELAY_MS - timeSinceLastCall);
-    }
-    lastRpcCallTime = Date.now();
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
@@ -726,25 +757,6 @@ function fetchWallets(count) {
     }
 }
 
-/**
- * Validate wallets array and return error message if empty
- */
-function validateWallets(wallets, chatId, mode = 'strategy') {
-    if (!wallets || wallets.length === 0) {
-        bot.sendMessage(chatId, formatErrorMessage(
-            'No Wallets Available',
-            `Unable to generate or load wallets for ${mode}`,
-            [
-                STATE.useWalletPool ? 'Create wallets: /createwallets 100' : 'Check ephemeral wallet generation',
-                'Verify wallet configuration',
-                'Check system resources'
-            ]
-        ), { parse_mode: 'Markdown' });
-        return false;
-    }
-    return true;
-}
-
 // ─────────────────────────────────────────────
 // 🔄 Universal Strategy Executor Template
 // ─────────────────────────────────────────────
@@ -785,11 +797,6 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
 
     const wallets = fetchWallets(walletCount);
     const isEphemeral = !STATE.useWalletPool;
-
-    // Validate we have wallets before proceeding
-    if (!validateWallets(wallets, chatId, name)) {
-        return { success: false, error: 'No wallets available' };
-    }
 
     // Show aging distribution for both pool and ephemeral (if aging enabled)
     if (walletManager.agingEnabled) {
@@ -1065,7 +1072,7 @@ async function executeSpamMode(chatId, connection) {
         // Add delay to let transactions settle
         await sleep(2000);
         
-        await BatchSwapEngine.executeBatch(
+        const dumpResult = await BatchSwapEngine.executeBatch(
             dumpWallets,
             async (w) => {
                 try {
@@ -1509,9 +1516,7 @@ async function executeJitoMevWash(chatId, connection) {
 async function executeKolAlphaCall(chatId, connection) {
     const swarmSize = STATE.useWalletPool ? Math.min(STATE.kolRetailSwarmSize, walletManager.size) : STATE.kolRetailSwarmSize;
 
-    const whaleArr = fetchWallets(1);
-    if (!validateWallets(whaleArr, chatId, 'KOL Alpha')) return;
-    const whaleWallet = whaleArr[0];
+    const whaleWallet = fetchWallets(1)[0];
     const whaleAmt = parseFloat((getRandomFloat(STATE.maxBuyAmount * 2, STATE.maxBuyAmount * 5)).toFixed(4));
     
     if (!STATE.useWalletPool) {
@@ -1523,7 +1528,6 @@ async function executeKolAlphaCall(chatId, connection) {
     await sleep(2000);
 
     const swarmWallets = fetchWallets(swarmSize);
-    if (!validateWallets(swarmWallets, chatId, 'KOL Swarm')) return;
     if (!STATE.useWalletPool) {
         bot.sendMessage(chatId, `🐟 Funding ${swarmSize} retail wallets...`, { parse_mode: 'Markdown' });
         await walletManager.fundWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.minBuyAmount + 0.005, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
@@ -1553,9 +1557,8 @@ async function executeKolAlphaCall(chatId, connection) {
 // 🐻 Strategy: Bull Trap
 async function executeBullTrap(chatId, connection) {
     bot.sendMessage(chatId, `🐻 *Bull Trap*\nFake breakout → stealth dump`, { parse_mode: 'Markdown' });
-    const trapArr = fetchWallets(1);
-    if (!validateWallets(trapArr, chatId, 'Bull Trap')) return;
-    const trapWallet = trapArr[0];
+    const walletCount = STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle;
+    const trapWallet = fetchWallets(1)[0];
     if (!STATE.useWalletPool) await walletManager.fundWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet + 0.01, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
 
     const steps = Math.floor(getRandomFloat(4, 7));
@@ -1632,8 +1635,6 @@ async function executeLadderStrategy(chatId, connection) {
 async function executeSniperStrategy(chatId, connection) {
     bot.sendMessage(chatId, `⚡ *SNIPER MODE* — Fast entry + staged exits`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
-    
-    if (!validateWallets(wallets, chatId, 'Sniper')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1662,7 +1663,6 @@ async function executeSniperStrategy(chatId, connection) {
 async function executeAdvWashStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🔄 *ADVANCED WASH* — Circular wash with ${STATE.washGroupCount} groups`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
-    if (!validateWallets(wallets, chatId, 'Advanced Wash')) return;
     const groupSize = Math.floor(wallets.length / STATE.washGroupCount);
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
@@ -1689,7 +1689,6 @@ async function executeAdvWashStrategy(chatId, connection) {
 async function executeMirrorWhaleStrategy(chatId, connection) {
     bot.sendMessage(chatId, `🐳 *MIRROR WHALE* — Copying top holders in real-time`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
-    if (!validateWallets(wallets, chatId, 'Mirror Whale')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1718,7 +1717,6 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
 async function executeCurvePumpStrategy(chatId, connection) {
     bot.sendMessage(chatId, `📈 *CURVE PUMP* — Pushing bonding curve to ${STATE.curveTargetPercent}%`, { parse_mode: 'Markdown' });
     const wallets = fetchWallets(STATE.walletsPerCycle);
-    if (!validateWallets(wallets, chatId, 'Curve Pump')) return;
 
     if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
     else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
@@ -1743,7 +1741,6 @@ async function executeCurvePumpStrategy(chatId, connection) {
     if (!STATE.useWalletPool) await walletManager.drainWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, concurrency: STATE.batchConcurrency });
     return { success: true };
 }
-
 
 // ─────────────────────────────────────────────
 // 🧠 SMART SELL MODULE
@@ -1847,7 +1844,7 @@ async function startSmartSellMonitor(connection, tokenAddr) {
     if (smartSellInterval) clearInterval(smartSellInterval);
     if (!STATE.smartSellEnabled) return;
 
-    const lastSeenSig = new Set();
+    let lastSeenSig = new Set();
 
     smartSellInterval = setInterval(async () => {
         if (!STATE.running && !STATE.smartSellEnabled) return;
@@ -1987,57 +1984,42 @@ function formatStrategyStart(name, config = {}) {
 /**
  * Format strategy completion message with stats
  */
+function formatStrategyComplete(name, stats = {}) {
+    let message = `🎉 *${name} Complete!*\n\n`;
+    message += `*Results:*\n`;
+    if (stats.cycles) message += `Cycles: \`${stats.cycles}\`\n`;
+    if (stats.trades) message += `Trades: \`${stats.trades}\`\n`;
+    if (stats.success !== undefined) message += `Success Rate: \`${stats.success}%\`\n`;
+    if (stats.volume) message += `Volume: \`${stats.volume}\` SOL\n`;
+    if (stats.duration) message += `Duration: \`${stats.duration}\`\n`;
+    return message;
+}
+
 // ======================== TELEGRAM UI ========================
 function showMainMenu(chatId) {
     const statusIcon = STATE.running ? '🟢' : '🔴';
-    const tokenStatus = STATE.tokenAddress ? `✅ \`${STATE.tokenAddress.slice(0,8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
-    const strategyEmoji = {
-        'STANDARD': '🌐', 'MAKER': '📈', 'WEB_OF_ACTIVITY': '🕸️', 'SPAM': '⚡', 'PUMP_DUMP': '🚀',
-        'CHART_PATTERN': '📐', 'HOLDER_GROWTH': '👥', 'WHALE': '🐋', 'VOLUME_BOOST': '📊', 'TRENDING': '🔥',
-        'JITO_MEV_WASH': '🌪️', 'KOL_ALPHA_CALL': '📱', 'BULL_TRAP': '🐻', 'SOCIAL_PROOF_AIRDROP': '🎁',
-        'LADDER': '📊', 'SNIPER': '⚡', 'ADV_WASH': '🔄', 'MIRROR_WHALE': '🐳', 'CURVE_PUMP': '📈'
-    };
-    const strat = strategyEmoji[STATE.strategy] || '🎯';
-    const multiStratCount = multiStrategyManager.strategies.size;
-    const runningMultiStrat = multiStrategyManager.getRunningCount();
-    
     bot.sendMessage(chatId,
-        `╔════════════════════════════════╗\n` +
-        `║   🤖 *VOLUME BOT v3.2*         ║\n` +
-        `╚════════════════════════════════╝\n\n` +
-        `${statusIcon} *Engine:* ${STATE.running ? 'RUNNING 🔴' : 'IDLE ⚫'}\n` +
-        `${strat} *Strategy:* \`${STATE.strategy}\`\n` +
+        `╔═══════════════════════╗\n` +
+        `║  🤖 *Volume Bot v3.2*  ║\n` +
+        `╚═══════════════════════╝\n\n` +
+        `⚡ *Status:* ${statusIcon} ${STATE.running ? 'RUNNING' : 'IDLE'}\n` +
+        `🎯 *Strategy:* \`${STATE.strategy}\`\n` +
         `💼 *Pool:* \`${walletManager.size.toLocaleString()}\` wallets\n` +
-        `🪙 *Token:* ${tokenStatus}\n` +
-        `🎯 *Multi-Strat:* \`${runningMultiStrat}/${multiStratCount}\` running\n\n` +
-        `📊 *Quick Stats:*\n` +
-        `• Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `• Buy Range: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL\n` +
-        `• Delay: \`${STATE.intervalBetweenActions / 1000}s\`\n` +
-        `• Jito: ${STATE.useJito ? '🟢' : '🔴'}\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
+        `🪙 *Token:* ${STATE.tokenAddress ? '✅ Set' : '❌ Not Set'}\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━`,
         {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: STATE.running ? '🛑 STOP ENGINE' : '⚡ LAUNCH ENGINE', callback_data: STATE.running ? 'stop_cycles' : 'start_cycles' }],
+                    [{ text: (STATE.running ? '🛑 STOP' : '🚀 LAUNCH'), callback_data: (STATE.running ? 'stop_cycles' : 'start_cycles') }],
                     [{ text: '📈 Strategies', callback_data: 'strategies' }, { text: '⚙️ Settings', callback_data: 'settings' }],
-                    [{ text: '🎯 Multi-Strategy', callback_data: 'multi_main' }, { text: '📊 Dashboard', callback_data: 'status' }],
-                    [{ text: '💼 Wallet Pool', callback_data: 'wallet_pool' }, { text: '📜 Wallet Info', callback_data: 'show_wallet' }],
-                    [{ text: '❓ Help', callback_data: 'help' }]
+                    [{ text: '💼 Wallet Pool', callback_data: 'wallet_pool' }, { text: '📊 Dashboard', callback_data: 'status' }],
+                    [{ text: '📜 My Wallet', callback_data: 'show_wallet' }, { text: '❓ Help', callback_data: 'help' }]
                 ]
             }
         }
     );
 }
-//                     [{ text: '📈 Strategies', callback_data: 'strategies' }, { text: '⚙️ Settings', callback_data: 'settings' }],
-//                     [{ text: '�💼 Wallet Pool', callback_data: 'wallet_pool' }, { text: '📊 Dashboard', callback_data: 'status' }],
-//                     [{ text: '📜 Wallet Info', callback_data: 'show_wallet' }, { text: '❓ Help', callback_data: 'help' }]
-//                 ]
-//             }
-//         }
-//     );
-// }
 
 function showStrategyMenu(chatId) {
     const s = STATE.strategy;
@@ -2066,472 +2048,31 @@ function showStrategyMenu(chatId) {
 
 function showSettingsMenu(chatId) {
     bot.sendMessage(chatId,
-        `⚙️ *SETTINGS & CONFIGURATION*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `*📋 Trading Parameters:*\n` +
-        `Select a category to configure:\n\n` +
-        `*🎮 Quick Access:*`,
+        `⚙️ *CONFIGURATION*\n━━━━━━━━━━━━━━━━━━━━━━━\n\nCategory:`,
         {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '📱 Basic Settings', callback_data: 'settings_basic' }, { text: '⚡ Advanced', callback_data: 'settings_advanced' }],
-                    [{ text: '🎯 Strategy Config', callback_data: 'settings_strat' }, { text: '🎭 Realism Engine', callback_data: 'show_realism' }],
-                    [{ text: '🔌 Swap Provider', callback_data: 'provider_settings' }, { text: '🛡️ Jito & Security', callback_data: 'settings_jito' }],
-                    [{ text: '🕸️ Stealth Funding', callback_data: 'stealth_settings' }, { text: '🧠 Smart Sell AI', callback_data: 'smart_sell_menu' }],
-                    [{ text: '« Back to Main', callback_data: 'back_to_main' }]
+                    [{ text: '📱 Basic', callback_data: 'settings_basic' }, { text: '⚡ Advanced', callback_data: 'settings_advanced' }],
+                    [{ text: '🎯 Strategy', callback_data: 'settings_strat' }, { text: '🎭 Realism', callback_data: 'show_realism' }],
+                    [{ text: '🔌 Provider', callback_data: 'provider_settings' }, { text: '🛡️ Jito', callback_data: 'settings_jito' }],
+                    [{ text: '🕸️ Stealth', callback_data: 'stealth_settings' }, { text: '🧠 Smart Sell', callback_data: 'smart_sell_menu' }],
+                    [{ text: '« Back', callback_data: 'back_to_main' }]
                 ]
             }
         }
-    );
-}
-
-function showStrategySettings(chatId) {
-    const strat = STATE.strategy;
-    let description = '';
-    let settingsInfo = '';
-    
-    // Strategy descriptions and relevant settings
-    switch (strat) {
-        case 'STANDARD':
-            description = 'Basic cycle-based volume with holds and sells';
-            settingsInfo = `• Cycles: \`${STATE.numberOfCycles}\`\n• Min/Max Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL\n• Delay: \`${STATE.intervalBetweenActions / 1000}s\``;
-            break;
-        case 'MAKER':
-            description = 'Generates volume via child wallet funding chains';
-            settingsInfo = `• Wallets/Cycle: \`${STATE.walletsPerCycle}\`\n• Fund Amt: \`${STATE.fundAmountPerWallet}\` SOL\n• Chain Depth: \`${STATE.makerFundingChainDepth}\``;
-            break;
-        case 'WEB_OF_ACTIVITY':
-            description = 'Creates organic interconnected trading activity';
-            settingsInfo = `• Wallets: \`${STATE.walletsPerCycle}\`\n• Cycles: \`${STATE.numberOfCycles}\`\n• Web Size: Multi-hop enabled`;
-            break;
-        case 'SPAM':
-            description = 'Rapid micro-transactions to boost volume metrics';
-            settingsInfo = `• Wallets: \`${STATE.walletsPerCycle}\`\n• Spam Amt: \`${STATE.spamMicroBuyAmount}\` SOL\n• Cycles: \`${STATE.numberOfCycles}\``;
-            break;
-        case 'PUMP_DUMP':
-            description = 'Large buys followed by aggressive sells';
-            settingsInfo = `• Buy Amt: \`${STATE.maxBuyAmount}\` SOL\n• Sell %: \`${STATE.whaleSellPercent}%\`\n• Wallets: \`${STATE.walletsPerCycle}\``;
-            break;
-        case 'CHART_PATTERN':
-            description = 'Mimics specific technical analysis patterns';
-            settingsInfo = `• Pattern: \`${STATE.chartPattern}\`\n• Cycles: \`${STATE.numberOfCycles}\`\n• Intensity: Dynamic`;
-            break;
-        case 'HOLDER_GROWTH':
-            description = 'Builds long-term holder position';
-            settingsInfo = `• Wallets: \`${STATE.holderWallets}\`\n• Buy Amt: \`${STATE.holderBuyAmount}\` SOL\n• No selling`;
-            break;
-        case 'WHALE':
-            description = 'Large coordinated whale buys and dumps';
-            settingsInfo = `• Buy Amt: \`${STATE.whaleBuyAmount}\` SOL\n• Sell %: \`${STATE.whaleSellPercent}%\`\n• Dump Chunks: 2-5`;
-            break;
-        case 'VOLUME_BOOST':
-            description = 'Multiplies total transaction volume';
-            settingsInfo = `• Cycles: \`${STATE.volumeBoostCycles}\`\n• Range: \`${STATE.volumeBoostMinAmount}-${STATE.volumeBoostMaxAmount}\` SOL\n• Multiplier: \`${STATE.volumeBoostMultiplier}x\``;
-            break;
-        case 'TRENDING':
-            description = 'Viral pumps, organic growth, or FOMO waves';
-            settingsInfo = `• Mode: \`${STATE.trendingMode}\`\n• Intensity: \`${STATE.trendingIntensity}\`\n• Wallets: \`${STATE.walletsPerCycle}\``;
-            break;
-        case 'JITO_MEV_WASH':
-            description = 'MEV-protected wash trading via Jito bundles';
-            settingsInfo = `• Jito: ${STATE.useJito ? '🟢 ON' : '🔴 OFF'}\n• Tip: \`${STATE.jitoTipAmount}\` SOL\n• Protection: Active`;
-            break;
-        case 'KOL_ALPHA_CALL':
-            description = 'Simulates KOL/influencer coordinated volume';
-            settingsInfo = `• Swarm Size: \`${STATE.kolRetailSwarmSize}\`\n• Cycles: \`${STATE.numberOfCycles}\`\n• Organized buys`;
-            break;
-        case 'BULL_TRAP':
-            description = 'Creates bull run illusion then dumps';
-            settingsInfo = `• Slippage: \`${STATE.bullTrapSlippage}%\`\n• Wallets: \`${STATE.walletsPerCycle}\`\n• Aggressive dump`;
-            break;
-        case 'SOCIAL_PROOF_AIRDROP':
-            description = 'Airdrop + organic volume for social proof';
-            settingsInfo = `• Airdrop Wallets: \`${STATE.airdropWalletCount}\`\n• Cycles: \`${STATE.numberOfCycles}\`\n• Social signal`;
-            break;
-        case 'LADDER':
-            description = 'Ascending price ladder created via bots';
-            settingsInfo = `• Steps: \`${STATE.ladderSteps}\`\n• Multiplier: \`${STATE.ladderBuyMultiplier}x\`\n• Realistic floor`;
-            break;
-        case 'SNIPER':
-            description = 'Fast entry/exit to mimic real sniper bots';
-            settingsInfo = `• Speed: \`${STATE.sniperEntrySpeedMs}ms\`\n• Hold: \`${STATE.sniperHoldTimeMin}-${STATE.sniperHoldTimeMax}s\`\n• Precision`;
-            break;
-        case 'ADV_WASH':
-            description = 'Advanced wash trading patterns';
-            settingsInfo = `• Groups: \`${STATE.washGroupCount}\`\n• Cycles/Group: \`${STATE.washCyclesPerGroup}\`\n• Complex patterns`;
-            break;
-        case 'MIRROR_WHALE':
-            description = 'Mirrors real whale trading activity';
-            settingsInfo = `• Mimic Count: \`${STATE.mirrorTopHolders}\`\n• Threshold: \`${STATE.mirrorBuyThresholdSOL}\` SOL\n• Organic`;
-            break;
-        case 'CURVE_PUMP':
-            description = 'Smooth price curve via distributed buys';
-            settingsInfo = `• Target %: \`${STATE.curveTargetPercent}%\`\n• Intensity: \`${STATE.curveBuyIntensity}x\`\n• Smooth curve`;
-            break;
-        default:
-            description = 'Current Strategy';
-            settingsInfo = '• Configuration pending';
-    }
-    
-    bot.sendMessage(chatId,
-        `🎯 *STRATEGY CONFIGURATION*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `*Current:* \`${strat}\`\n` +
-        `*Description:* ${description}\n\n` +
-        `*Parameters:*\n${settingsInfo}`,
-        {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '⚙️ Configure Parameters', callback_data: 'config_strat' }],
-                    [{ text: '🔄 Change Strategy', callback_data: 'settings_strat_select' }],
-                    [{ text: '« Back to Settings', callback_data: 'settings' }]
-                ]
-            }
-        }
-    );
-}
-
-function showStrategyConfig(chatId, strategy) {
-    switch (strategy) {
-        case 'STANDARD': return showConfigStandard(chatId);
-        case 'MAKER': return showConfigMaker(chatId);
-        case 'WEB_OF_ACTIVITY': return showConfigWeb(chatId);
-        case 'SPAM': return showConfigSpam(chatId);
-        case 'PUMP_DUMP': return showConfigPumpDump(chatId);
-        case 'CHART_PATTERN': return showConfigChart(chatId);
-        case 'HOLDER_GROWTH': return showConfigHolder(chatId);
-        case 'WHALE': return showConfigWhale(chatId);
-        case 'VOLUME_BOOST': return showConfigVolumeBoost(chatId);
-        case 'TRENDING': return showConfigTrending(chatId);
-        case 'JITO_MEV_WASH': return showConfigJitoWash(chatId);
-        case 'KOL_ALPHA_CALL': return showConfigKol(chatId);
-        case 'BULL_TRAP': return showConfigBullTrap(chatId);
-        case 'SOCIAL_PROOF_AIRDROP': return showConfigAirdrop(chatId);
-        case 'LADDER': return showConfigLadder(chatId);
-        case 'SNIPER': return showConfigSniper(chatId);
-        case 'ADV_WASH': return showConfigAdvWash(chatId);
-        case 'MIRROR_WHALE': return showConfigMirror(chatId);
-        case 'CURVE_PUMP': return showConfigCurve(chatId);
-        default: bot.sendMessage(chatId, `❌ Unknown strategy: ${strategy}`);
-    }
-}
-
-function showConfigStandard(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *STANDARD STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `💰 Min Buy: \`${STATE.minBuyAmount}\` SOL\n` +
-        `💰 Max Buy: \`${STATE.maxBuyAmount}\` SOL\n` +
-        `⏱ Delay: \`${STATE.intervalBetweenActions / 1000}s\`\n` +
-        `🎲 Jitter: \`${STATE.jitterPercentage}%\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🔁 Cycles', callback_data: 'config_std_cycles' }, { text: '💰 Min Buy', callback_data: 'config_std_minbuy' }],
-            [{ text: '💰 Max Buy', callback_data: 'config_std_maxbuy' }, { text: '⏱ Delay', callback_data: 'config_std_delay' }],
-            [{ text: '🎲 Jitter', callback_data: 'config_std_jitter' }, { text: '👥 Wallets', callback_data: 'config_std_wallets' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigMaker(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *MAKER STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `💵 Fund/Wallet: \`${STATE.fundAmountPerWallet}\` SOL\n` +
-        `🔗 Chain Depth: \`${STATE.makerFundingChainDepth}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Wallets', callback_data: 'config_mkr_wallets' }, { text: '💵 Fund Amt', callback_data: 'config_mkr_fundamt' }],
-            [{ text: '🔗 Chain Depth', callback_data: 'config_mkr_depth' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigWeb(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *WEB OF ACTIVITY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Wallets', callback_data: 'config_web_wallets' }, { text: '🔁 Cycles', callback_data: 'config_web_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigSpam(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *SPAM STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `💸 Micro Amt: \`${STATE.spamMicroBuyAmount}\` SOL\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `⏱ Delay: \`${STATE.intervalBetweenActions / 1000}s\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Wallets', callback_data: 'config_spm_wallets' }, { text: '💸 Micro Amt', callback_data: 'config_spm_microamt' }],
-            [{ text: '🔁 Cycles', callback_data: 'config_spm_cycles' }, { text: '⏱ Delay', callback_data: 'config_spm_delay' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigPumpDump(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *PUMP & DUMP CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🚀 Buy Amt: \`${STATE.maxBuyAmount}\` SOL\n` +
-        `📉 Sell %: \`${STATE.whaleSellPercent}%\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🚀 Buy Amount', callback_data: 'config_pd_buyamt' }, { text: '📉 Sell %', callback_data: 'config_pd_sellpct' }],
-            [{ text: '👥 Wallets', callback_data: 'config_pd_wallets' }, { text: '🔁 Cycles', callback_data: 'config_pd_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigChart(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *CHART PATTERN CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📐 Pattern: \`${STATE.chartPattern}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '📐 Chart Pattern', callback_data: 'config_chr_pattern' }],
-            [{ text: '🔁 Cycles', callback_data: 'config_chr_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigHolder(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *HOLDER GROWTH CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Wallets: \`${STATE.holderWallets}\`\n` +
-        `💰 Buy Amt: \`${STATE.holderBuyAmount}\` SOL\n` +
-        `⚠️ No selling (Long hold)`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Wallet Count', callback_data: 'config_hldr_wallets' }, { text: '💰 Buy Amount', callback_data: 'config_hldr_buyamt' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigWhale(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *WHALE STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🐋 Buy Amt: \`${STATE.whaleBuyAmount}\` SOL\n` +
-        `📉 Dump %: \`${STATE.whaleSellPercent}%\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🐋 Buy Amount', callback_data: 'config_whl_buyamt' }, { text: '📉 Dump %', callback_data: 'config_whl_dumppct' }],
-            [{ text: '👥 Wallets', callback_data: 'config_whl_wallets' }, { text: '🔁 Cycles', callback_data: 'config_whl_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigVolumeBoost(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *VOLUME BOOST CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📊 Multiplier: \`${STATE.volumeBoostMultiplier}x\`\n` +
-        `🔁 Cycles: \`${STATE.volumeBoostCycles}\`\n` +
-        `💰 Range: \`${STATE.volumeBoostMinAmount}-${STATE.volumeBoostMaxAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '📊 Multiplier', callback_data: 'config_vb_mult' }, { text: '🔁 Cycles', callback_data: 'config_vb_cycles' }],
-            [{ text: '💰 Amount Range', callback_data: 'config_vb_amtrange' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigTrending(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *TRENDING STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🔥 Mode: \`${STATE.trendingMode}\`\n` +
-        `⚡ Intensity: \`${STATE.trendingIntensity}\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🔥 Trending Mode', callback_data: 'config_trnd_mode' }],
-            [{ text: '⚡ Intensity', callback_data: 'config_trnd_intensity' }, { text: '👥 Wallets', callback_data: 'config_trnd_wallets' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showTrendingModeMenu(chatId) {
-    const current = STATE.trendingMode;
-    const modes = [
-        ['VIRAL_PUMP', '🚀 Viral Pump', 'Exponential price increase'],
-        ['ORGANIC_GROWTH', '🌱 Organic Growth', 'Steady gradual increase'],
-        ['FOMO_WAVE', '🌊 FOMO Wave', 'Rapid surge with cooldowns'],
-        ['LIQUIDITY_LADDER', '📊 Liquidity Ladder', 'Step-by-step price climb']
-    ];
-    
-    bot.sendMessage(chatId,
-        `🔥 *SELECT TRENDING MODE*\n━━━━━━━━━━━━━━━━━━━━━━━\n\nCurrent: \`${current}\`\n\n*Modes:*`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: (current === 'VIRAL_PUMP' ? '✅ ' : '') + modes[0][1], callback_data: 'config_trnd_mode_viral' }],
-            [{ text: modes[0][2], callback_data: 'none' }],
-            [{ text: (current === 'ORGANIC_GROWTH' ? '✅ ' : '') + modes[1][1], callback_data: 'config_trnd_mode_organic' }],
-            [{ text: modes[1][2], callback_data: 'none' }],
-            [{ text: (current === 'FOMO_WAVE' ? '✅ ' : '') + modes[2][1], callback_data: 'config_trnd_mode_fomo' }],
-            [{ text: modes[2][2], callback_data: 'none' }],
-            [{ text: (current === 'LIQUIDITY_LADDER' ? '✅ ' : '') + modes[3][1], callback_data: 'config_trnd_mode_ladder' }],
-            [{ text: modes[3][2], callback_data: 'none' }],
-            [{ text: '« Back', callback_data: 'back_trending_config' }]
-        ]}}
-    );
-}
-
-
-function showConfigJitoWash(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *JITO MEV WASH CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🛡️ Jito: ${STATE.useJito ? '🟢 ON' : '🔴 OFF'}\n` +
-        `💵 Tip: \`${STATE.jitoTipAmount}\` SOL\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: `🛡️ ${STATE.useJito ? 'Disable' : 'Enable'} Jito`, callback_data: 'config_jmw_toggle' }],
-            [{ text: '💵 Jito Tip', callback_data: 'config_jmw_tip' }],
-            [{ text: '👥 Wallets', callback_data: 'config_jmw_wallets' }, { text: '🔁 Cycles', callback_data: 'config_jmw_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigKol(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *KOL ALPHA CALL CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Swarm Size: \`${STATE.kolRetailSwarmSize}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Swarm Size', callback_data: 'config_kol_swarm' }, { text: '🔁 Cycles', callback_data: 'config_kol_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigBullTrap(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *BULL TRAP CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📊 Slippage: \`${STATE.bullTrapSlippage}%\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\`\n` +
-        `💰 Max Buy: \`${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '📊 Slippage', callback_data: 'config_bt_slip' }, { text: '👥 Wallets', callback_data: 'config_bt_wallets' }],
-            [{ text: '💰 Buy Amount', callback_data: 'config_bt_buyamt' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigAirdrop(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *SOCIAL PROOF AIRDROP CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🎁 Airdrop Wallets: \`${STATE.airdropWalletCount}\`\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🎁 Airdrop Count', callback_data: 'config_air_count' }, { text: '🔁 Cycles', callback_data: 'config_air_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigLadder(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *LADDER STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🪜 Steps: \`${STATE.ladderSteps}\`\n` +
-        `📈 Multiplier: \`${STATE.ladderBuyMultiplier}x\`\n` +
-        `💰 Min Buy: \`${STATE.minBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🪜 Ladder Steps', callback_data: 'config_ldr_steps' }, { text: '📈 Multiplier', callback_data: 'config_ldr_mult' }],
-            [{ text: '💰 Min Buy', callback_data: 'config_ldr_minbuy' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigSniper(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *SNIPER STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `⚡ Entry Speed: \`${STATE.sniperEntrySpeedMs}ms\`\n` +
-        `⏱ Hold Time: \`${STATE.sniperHoldTimeMin}-${STATE.sniperHoldTimeMax}s\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '⚡ Entry Speed', callback_data: 'config_snp_speed' }],
-            [{ text: '⏱ Hold Time', callback_data: 'config_snp_holdtime' }, { text: '👥 Wallets', callback_data: 'config_snp_wallets' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigAdvWash(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *ADV WASH STRATEGY CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `👥 Groups: \`${STATE.washGroupCount}\`\n` +
-        `🔄 Cycles/Group: \`${STATE.washCyclesPerGroup}\`\n` +
-        `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '👥 Wash Groups', callback_data: 'config_awsh_groups' }, { text: '🔄 Cycles/Group', callback_data: 'config_awsh_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigMirror(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *MIRROR WHALE CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🐳 Mimic Count: \`${STATE.mirrorTopHolders}\`\n` +
-        `📊 Threshold: \`${STATE.mirrorBuyThresholdSOL}\` SOL\n` +
-        `🔁 Cycles: \`${STATE.numberOfCycles}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '🐳 Mimic Count', callback_data: 'config_mir_count' }, { text: '📊 Threshold', callback_data: 'config_mir_thresh' }],
-            [{ text: '🔁 Cycles', callback_data: 'config_mir_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
-    );
-}
-
-function showConfigCurve(chatId) {
-    bot.sendMessage(chatId,
-        `⚙️ *CURVE PUMP CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📈 Target %: \`${STATE.curveTargetPercent}%\`\n` +
-        `⚡ Intensity: \`${STATE.curveBuyIntensity}x\`\n` +
-        `👥 Wallets: \`${STATE.walletsPerCycle}\``,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '📈 Target %', callback_data: 'config_crv_target' }, { text: '⚡ Intensity', callback_data: 'config_crv_intensity' }],
-            [{ text: '👥 Wallets', callback_data: 'config_crv_wallets' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
     );
 }
 
 function showBasicSettings(chatId) {
-    const tokenStatus = STATE.tokenAddress ? `✅ \`${STATE.tokenAddress.slice(0, 8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
+    const tokenStatus = STATE.tokenAddress ? `\`${STATE.tokenAddress.slice(0, 8)}...${STATE.tokenAddress.slice(-4)}\`` : '❌ Not Set';
     bot.sendMessage(chatId,
-        `📱 *BASIC TRADING SETTINGS*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `🪙 *Token Configuration:*\n` +
-        `• Status: ${tokenStatus}\n\n` +
-        `💰 *Buy Settings:*\n` +
-        `• Min Purchase: \`${STATE.minBuyAmount}\` SOL\n` +
-        `• Max Purchase: \`${STATE.maxBuyAmount}\` SOL\n\n` +
-        `🔄 *Cycle Control:*\n` +
-        `• Cycles: \`${STATE.numberOfCycles}\`\n` +
-        `• Interval: \`${STATE.intervalBetweenActions / 1000}s\`\n` +
-        `• Jitter: \`${STATE.jitterPercentage}%\` (randomness)\n\n` +
-        `📝 *How to Configure:*\n` +
-        `Tap a button below to modify that parameter`,
-
+        `📱 *BASIC CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `🪙 *Token:* ${tokenStatus}\n` +
+        `💰 *Buy:* \`${STATE.minBuyAmount}\` - \`${STATE.maxBuyAmount}\` SOL\n` +
+        `🔁 *Cycles:* \`${STATE.numberOfCycles}\`\n` +
+        `⏱ *Delay:* \`${STATE.intervalBetweenActions / 1000}s\`\n` +
+        `🎲 *Jitter:* \`${STATE.jitterPercentage}%\``,
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2549,19 +2090,12 @@ function showBasicSettings(chatId) {
 
 function showAdvancedSettings(chatId) {
     bot.sendMessage(chatId,
-        `⚡ *ADVANCED TRADING SETTINGS*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `💸 *Gas & Execution:*\n` +
-        `• Priority Fee: \`${STATE.priorityFee}\` SOL (faster tx)\n` +
-        `• Slippage: \`${STATE.slippage}%\` (price tolerance)\n\n` +
-        `⚙️ *Performance Tuning:*\n` +
-        `• Batch Concurrency: \`${STATE.batchConcurrency}\` parallel tasks\n` +
-        `• Wallets/Cycle: \`${STATE.walletsPerCycle}\` active wallets\n\n` +
-        `🔄 *Transaction Synchronization:*\n` +
-        `• Buys: \`${STATE.maxSimultaneousBuys}\` simultaneous\n` +
-        `• Sells: \`${STATE.maxSimultaneousSells}\` simultaneous\n\n` +
-        `💡 *Tip:* Higher concurrency = faster but more gas costs`,
-
+        `⚡ *Advanced Settings*\n\n` +
+        `• Priority Fee: \`${STATE.priorityFee}\` SOL\n` +
+        `• Slippage: \`${STATE.slippage}%\`\n` +
+        `• Batch Concurrency: \`${STATE.batchConcurrency}\`\n` +
+        `• Wallets/Cycle: \`${STATE.walletsPerCycle}\`\n` +
+        `• Sync Buys/Sells: \`${STATE.maxSimultaneousBuys}/${STATE.maxSimultaneousSells}\``,
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2688,18 +2222,14 @@ function showDexMenu(chatId) {
 function showWalletPoolMenu(chatId) {
     const stats = walletManager.getStats?.() || { total: walletManager.size, firstFew: [] };
     const modeIcon = STATE.useWalletPool ? '🟢' : '🔴';
-    const statusBar = STATE.useWalletPool ? '█████░░░░' : '░░░░░░░░░░';
-    
     bot.sendMessage(chatId,
-        `💼 *WALLET POOL MANAGEMENT*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `${modeIcon} *Status:* ${STATE.useWalletPool ? 'ACTIVE 🟢' : 'INACTIVE 🔴'} ${statusBar}\n\n` +
-        `📊 *Pool Statistics:*\n` +
-        `• Total Wallets: \`${stats.total.toLocaleString()}\`\n` +
-        `• Batch Size: \`${STATE.walletsPerCycle}\` wallets\n` +
-        `• Concurrency: \`${STATE.batchConcurrency}\` parallel\n` +
-        `• Fund Amount: \`${STATE.fundAmountPerWallet}\` SOL/wallet\n\n` +
-        `${stats.total > 0 ? `📝 *Sample Wallet:*\n\`${stats.firstFew[0]}\`` : `⚠️ *No wallets generated yet*\nCreate wallets to start trading`}`,
-
+        `💼 *WALLET MANAGER*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `📊 *Total:* \`${stats.total.toLocaleString()}\`\n` +
+        `${modeIcon} *Mode:* ${STATE.useWalletPool ? 'ENABLED' : 'DISABLED'}\n` +
+        `⚡ *Concurrency:* \`${STATE.batchConcurrency}\`\n` +
+        `👥 *Per Cycle:* \`${STATE.walletsPerCycle}\`\n` +
+        `💵 *Fund Amt:* \`${STATE.fundAmountPerWallet}\` SOL\n` +
+        `${stats.total > 0 ? `\nSample: \`${stats.firstFew[0]}\`` : `\n⚠️ No wallets yet`}`,
         {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2840,905 +2370,6 @@ async function setSmartSellDevWallet(privateKeyBase58, chatId) {
     }
 }
 
-// ======================== MULTI-STRATEGY UI FUNCTIONS ========================
-
-function showMultiStrategyMenu(chatId) {
-    const strategies = multiStrategyManager.getAllStrategies();
-    const running = strategies.filter(s => s.status === 'RUNNING').length;
-    const globalStats = multiStrategyManager.getGlobalStats();
-    
-    bot.sendMessage(chatId,
-        `🎯 *Multi-Strategy Manager*\n━━━━━━━━━━━━━━━━━\n\n` +
-        `Total Strategies: \`${strategies.length}\`\n` +
-        `Running: \`${running}\` | Idle: \`${strategies.length - running}\`\n` +
-        `Total Wallets Used: \`${globalStats.totalWalletsUsed}\`\n` +
-        `Total P&L: \`${globalStats.totalProfitLoss.toFixed(4)}\` SOL\n\n` +
-        `Manage multiple strategies simultaneously with isolated wallet pools:`,
-        {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '➕ Create Strategy', callback_data: 'multi_create' }],
-                    [{ text: '📋 View All Strategies', callback_data: 'multi_list' }],
-                    [{ text: '📊 Global Statistics', callback_data: 'multi_stats' }],
-                    [{ text: '💼 Wallet Allocation', callback_data: 'multi_wallets' }],
-                    [{ text: '🔙 Back to Main', callback_data: 'back_to_main' }]
-                ]
-            }
-        }
-    );
-}
-
-function showStrategyList(chatId) {
-    const strategies = multiStrategyManager.getAllStrategies();
-    
-    if (strategies.length === 0) {
-        return bot.sendMessage(chatId,
-            `📋 *No Strategies*\n\n` +
-            `Create your first strategy to get started!`,
-            {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '➕ Create Strategy', callback_data: 'multi_create' }],
-                        [{ text: '🔙 Back', callback_data: 'multi_main' }]
-                    ]
-                }
-            }
-        );
-    }
-    
-    const keyboard = [];
-    let msg = `📋 *Strategy List*\n━━━━━━━━━━━━━━━━━\n\n`;
-    
-    strategies.forEach(s => {
-        const statusIcon = s.status === 'RUNNING' ? '🟢' : 
-                          s.status === 'PAUSED' ? '⏸️' : 
-                          s.status === 'ERROR' ? '🔴' : '⚫';
-        
-        msg += `${statusIcon} *${s.name}*\n`;
-        msg += `Type: \`${s.type}\` | Wallets: \`${s.walletCount}\`\n`;
-        msg += `Cycles: \`${s.cycles}\` | P&L: \`${s.profitLoss.toFixed(4)}\` SOL\n\n`;
-        
-        keyboard.push([{
-            text: `${statusIcon} ${s.name}`,
-            callback_data: `multi_view_${s.id}`
-        }]);
-    });
-    
-    keyboard.push([{ text: '🔙 Back', callback_data: 'multi_main' }]);
-    
-    bot.sendMessage(chatId, msg, {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    });
-}
-
-function showStrategyDetails(chatId, strategyId) {
-    const strategy = multiStrategyManager.getStrategy(strategyId);
-    
-    if (!strategy) {
-        return bot.sendMessage(chatId, `❌ Strategy not found`);
-    }
-    
-    const statusIcon = strategy.status === 'RUNNING' ? '🟢' : 
-                      strategy.status === 'PAUSED' ? '⏸️' : 
-                      strategy.status === 'ERROR' ? '🔴' : '⚫';
-    
-    let msg = `🎯 *Strategy Details*\n━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `${statusIcon} *${strategy.name}*\n`;
-    msg += `Type: \`${strategy.type}\`\n`;
-    msg += `Status: \`${strategy.status}\`\n\n`;
-    
-    msg += `*Configuration:*\n`;
-    msg += `Token: \`${strategy.config.tokenAddress.substring(0, 8)}...\`\n`;
-    msg += `Buy Range: \`${strategy.config.minBuyAmount}-${strategy.config.maxBuyAmount}\` SOL\n`;
-    msg += `Cycles: \`${strategy.runtime.currentCycle}/${strategy.config.numberOfCycles}\`\n`;
-    msg += `Wallets: \`${strategy.wallets.assigned.length}\` (Active: \`${strategy.wallets.active.length}\`)\n\n`;
-    
-    msg += `*Statistics:*\n`;
-    msg += `Buys: \`${strategy.stats.successfulBuys}/${strategy.stats.totalBuys}\`\n`;
-    msg += `Sells: \`${strategy.stats.successfulSells}/${strategy.stats.totalSells}\`\n`;
-    msg += `Spent: \`${strategy.stats.totalSOLSpent.toFixed(4)}\` SOL\n`;
-    msg += `Received: \`${strategy.stats.totalSOLReceived.toFixed(4)}\` SOL\n`;
-    msg += `P&L: \`${strategy.stats.profitLoss.toFixed(4)}\` SOL\n`;
-    msg += `ROI: \`${strategy.stats.roi.toFixed(2)}%\``;
-    
-    const keyboard = [];
-    
-    if (strategy.status === 'IDLE' || strategy.status === 'STOPPED') {
-        keyboard.push([{ text: '▶️ Start', callback_data: `multi_start_${strategyId}` }]);
-    }
-    if (strategy.status === 'RUNNING') {
-        keyboard.push([
-            { text: '⏸️ Pause', callback_data: `multi_pause_${strategyId}` },
-            { text: '⏹️ Stop', callback_data: `multi_stop_${strategyId}` }
-        ]);
-    }
-    if (strategy.status === 'PAUSED') {
-        keyboard.push([{ text: '▶️ Resume', callback_data: `multi_resume_${strategyId}` }]);
-    }
-    
-    keyboard.push([
-        { text: '⚙️ Configure', callback_data: `multi_config_${strategyId}` },
-        { text: '🗑️ Delete', callback_data: `multi_delete_${strategyId}` }
-    ]);
-    keyboard.push([{ text: '🔙 Back to List', callback_data: 'multi_list' }]);
-    
-    bot.sendMessage(chatId, msg, {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    });
-}
-
-function showWalletAllocation(chatId) {
-    const strategies = multiStrategyManager.getAllStrategies();
-    const totalWallets = walletManager.size;
-    let assignedWallets = 0;
-    
-    let msg = `💼 *Wallet Allocation*\n━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `Total Wallets: \`${totalWallets}\`\n\n`;
-    
-    if (strategies.length === 0) {
-        msg += `No strategies created yet.\n\n`;
-    } else {
-        strategies.forEach(s => {
-            const strategy = multiStrategyManager.getStrategy(s.id);
-            const count = strategy.wallets.assigned.length;
-            assignedWallets += count;
-            msg += `*${s.name}*\n`;
-            msg += `Assigned: \`${count}\` | Active: \`${strategy.wallets.active.length}\`\n\n`;
-        });
-    }
-    
-    msg += `Unassigned: \`${totalWallets - assignedWallets}\` wallets`;
-    
-    bot.sendMessage(chatId, msg, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🔄 Auto-Allocate', callback_data: 'multi_auto_allocate' }],
-                [{ text: '🔙 Back', callback_data: 'multi_main' }]
-            ]
-        }
-    });
-}
-
-function showMultiStrategyStats(chatId) {
-    const globalStats = multiStrategyManager.getGlobalStats();
-    const strategies = multiStrategyManager.getAllStrategies();
-    
-    let msg = `📊 *Global Multi-Strategy Statistics*\n━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `*Overview:*\n`;
-    msg += `Total Strategies: \`${globalStats.totalStrategies}\`\n`;
-    msg += `Running: \`${globalStats.runningStrategies}\`\n`;
-    msg += `Idle: \`${globalStats.idleStrategies}\`\n`;
-    msg += `Wallets Used: \`${globalStats.totalWalletsUsed}\`\n\n`;
-    
-    msg += `*Performance:*\n`;
-    msg += `Total Buys: \`${globalStats.totalBuys}\`\n`;
-    msg += `Total Sells: \`${globalStats.totalSells}\`\n`;
-    msg += `Total P&L: \`${globalStats.totalProfitLoss.toFixed(4)}\` SOL\n\n`;
-    
-    if (strategies.length > 0) {
-        msg += `*Top Performers:*\n`;
-        const sorted = strategies.sort((a, b) => b.profitLoss - a.profitLoss).slice(0, 3);
-        sorted.forEach((s, i) => {
-            msg += `${i + 1}. ${s.name}: \`${s.profitLoss.toFixed(4)}\` SOL\n`;
-        });
-    }
-    
-    bot.sendMessage(chatId, msg, {
-        parse_mode: 'Markdown',
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🔙 Back', callback_data: 'multi_main' }]
-            ]
-        }
-    });
-}
-
-function showCreateStrategyMenu(chatId) {
-    bot.sendMessage(chatId,
-        `➕ *Create New Strategy*\n━━━━━━━━━━━━━━━━━\n\n` +
-        `Select strategy type:`,
-        {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🌐 Standard', callback_data: 'multi_create_STANDARD' }, { text: '📈 Maker', callback_data: 'multi_create_MAKER' }],
-                    [{ text: '🕸️ Web of Activity', callback_data: 'multi_create_WEB_OF_ACTIVITY' }, { text: '⚡ Spam', callback_data: 'multi_create_SPAM' }],
-                    [{ text: '🐋 Whale', callback_data: 'multi_create_WHALE' }, { text: '📊 Volume Boost', callback_data: 'multi_create_VOLUME_BOOST' }],
-                    [{ text: '🔥 Trending', callback_data: 'multi_create_TRENDING' }, { text: '👥 Holder Growth', callback_data: 'multi_create_HOLDER_GROWTH' }],
-                    [{ text: '🚀 Pump & Dump', callback_data: 'multi_create_PUMP_DUMP' }, { text: '📐 Chart Pattern', callback_data: 'multi_create_CHART_PATTERN' }],
-                    [{ text: '🌪️ Jito MEV Wash', callback_data: 'multi_create_JITO_MEV_WASH' }, { text: '📱 KOL Alpha', callback_data: 'multi_create_KOL_ALPHA_CALL' }],
-                    [{ text: '🐻 Bull Trap', callback_data: 'multi_create_BULL_TRAP' }, { text: '🎁 Airdrop', callback_data: 'multi_create_SOCIAL_PROOF_AIRDROP' }],
-                    [{ text: '📊 Ladder', callback_data: 'multi_create_LADDER' }, { text: '⚡ Sniper', callback_data: 'multi_create_SNIPER' }],
-                    [{ text: '🔄 Adv Wash', callback_data: 'multi_create_ADV_WASH' }, { text: '🐳 Mirror Whale', callback_data: 'multi_create_MIRROR_WHALE' }],
-                    [{ text: '📈 Curve Pump', callback_data: 'multi_create_CURVE_PUMP' }],
-                    [{ text: '🔙 Cancel', callback_data: 'multi_main' }]
-                ]
-            }
-        }
-    );
-}
-
-function showMultiStrategyConfig(chatId, strategyId) {
-    const strategy = multiStrategyManager.getStrategy(strategyId);
-    if (!strategy) {
-        return bot.sendMessage(chatId, `❌ Strategy not found`, { parse_mode: 'Markdown' });
-    }
-    
-    const cfg = strategy.config;
-    let msg = `⚙️ *Configure: ${strategy.name}*\n━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `*Basic Settings:*\n`;
-    msg += `• Cycles: \`${cfg.numberOfCycles}\`\n`;
-    msg += `• Buy Range: \`${cfg.minBuyAmount}-${cfg.maxBuyAmount}\` SOL\n`;
-    msg += `• Delay: \`${cfg.intervalBetweenActions / 1000}s\`\n`;
-    msg += `• Wallets: \`${cfg.walletCount}\`\n`;
-    msg += `• Wallet Mode: \`${cfg.useWalletPool ? 'Pool' : 'Ephemeral'}\`\n\n`;
-    
-    msg += `*Advanced:*\n`;
-    msg += `• Jitter: \`${cfg.jitterPercentage}%\`\n`;
-    msg += `• Priority Fee: \`${cfg.priorityFee}\` SOL\n`;
-    msg += `• Slippage: \`${cfg.slippage}%\`\n`;
-    msg += `• Jito: ${cfg.useJito ? '🟢' : '🔴'}\n`;
-    msg += `• Provider: \`${cfg.swapProvider}\`\n`;
-    msg += `• DEX: \`${cfg.targetDex}\`\n`;
-    
-    const keyboard = [
-        [{ text: '🔁 Cycles', callback_data: `multi_cfg_cycles_${strategyId}` }, { text: '💰 Buy Range', callback_data: `multi_cfg_buyrange_${strategyId}` }],
-        [{ text: '⏱ Delay', callback_data: `multi_cfg_delay_${strategyId}` }, { text: '👥 Wallets', callback_data: `multi_cfg_wallets_${strategyId}` }],
-        [{ text: '🎲 Jitter', callback_data: `multi_cfg_jitter_${strategyId}` }, { text: '💎 Priority Fee', callback_data: `multi_cfg_fee_${strategyId}` }],
-        [{ text: '📊 Slippage', callback_data: `multi_cfg_slip_${strategyId}` }, { text: '🔄 Wallet Mode', callback_data: `multi_cfg_walletmode_${strategyId}` }],
-        [{ text: '🛡️ Jito Toggle', callback_data: `multi_cfg_jito_${strategyId}` }, { text: '🔌 Provider', callback_data: `multi_cfg_provider_${strategyId}` }],
-        [{ text: '🎯 DEX', callback_data: `multi_cfg_dex_${strategyId}` }],
-        [{ text: '🔙 Back to Strategy', callback_data: `multi_view_${strategyId}` }]
-    ];
-    
-    bot.sendMessage(chatId, msg, {
-        parse_mode: 'Markdown',
-        reply_markup: { inline_keyboard: keyboard }
-    });
-}
-
-function handleMultiStrategyConfigSetting(chatId, strategyId, settingType) {
-    const strategy = multiStrategyManager.getStrategy(strategyId);
-    if (!strategy) {
-        return bot.sendMessage(chatId, `❌ Strategy not found`);
-    }
-    
-    switch (settingType) {
-        case 'cycles':
-            promptSetting(chatId, '🔁 Enter number of cycles (1-1000):', (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 1 || num > 1000) {
-                    bot.sendMessage(chatId, '❌ Invalid cycles. Must be 1-1000.');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { numberOfCycles: num });
-                        bot.sendMessage(chatId, `✅ Cycles set to ${num}`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'buyrange':
-            promptSetting(chatId, '💰 Enter min and max buy amounts (e.g., "0.01 0.05"):', (val) => {
-                const parts = val.trim().split(/\s+/);
-                if (parts.length !== 2) {
-                    return bot.sendMessage(chatId, '❌ Format: "min max" (e.g., "0.01 0.05")');
-                }
-                const min = parseFloat(parts[0]);
-                const max = parseFloat(parts[1]);
-                if (isNaN(min) || isNaN(max) || min <= 0 || max <= min) {
-                    bot.sendMessage(chatId, '❌ Invalid amounts. Max must be greater than min.');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { 
-                            minBuyAmount: min, 
-                            maxBuyAmount: max 
-                        });
-                        bot.sendMessage(chatId, `✅ Buy range set to ${min}-${max} SOL`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'delay':
-            promptSetting(chatId, '⏱ Enter delay between actions (seconds):', (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 0) {
-                    bot.sendMessage(chatId, '❌ Invalid delay.');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { 
-                            intervalBetweenActions: num * 1000 
-                        });
-                        bot.sendMessage(chatId, `✅ Delay set to ${num}s`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'wallets':
-            promptSetting(chatId, '👥 Enter number of wallets for this strategy:', (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 1) {
-                    bot.sendMessage(chatId, '❌ Invalid wallet count.');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { walletCount: num });
-                        bot.sendMessage(chatId, `✅ Wallet count set to ${num}\n⚠️ Re-allocate wallets for changes to take effect.`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'jitter':
-            promptSetting(chatId, '🎲 Enter jitter percentage (0-100):', (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 0 || num > 100) {
-                    bot.sendMessage(chatId, '❌ Invalid jitter (0-100).');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { jitterPercentage: num });
-                        bot.sendMessage(chatId, `✅ Jitter set to ${num}%`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'fee':
-            promptSetting(chatId, '💎 Enter priority fee (SOL):', (val) => {
-                const num = parseFloat(val);
-                if (isNaN(num) || num < 0) {
-                    bot.sendMessage(chatId, '❌ Invalid fee.');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { priorityFee: num });
-                        bot.sendMessage(chatId, `✅ Priority fee set to ${num} SOL`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'slip':
-            promptSetting(chatId, '📊 Enter slippage percentage (0-100):', (val) => {
-                const num = parseFloat(val);
-                if (isNaN(num) || num < 0 || num > 100) {
-                    bot.sendMessage(chatId, '❌ Invalid slippage (0-100).');
-                } else {
-                    try {
-                        multiStrategyManager.updateStrategyConfig(strategyId, { slippage: num });
-                        bot.sendMessage(chatId, `✅ Slippage set to ${num}%`);
-                        showMultiStrategyConfig(chatId, strategyId);
-                    } catch (error) {
-                        bot.sendMessage(chatId, `❌ ${error.message}`);
-                    }
-                }
-            });
-            break;
-            
-        case 'walletmode':
-            try {
-                const currentMode = strategy.config.useWalletPool || false;
-                multiStrategyManager.updateStrategyConfig(strategyId, { useWalletPool: !currentMode });
-                bot.sendMessage(chatId, `✅ Wallet mode: ${!currentMode ? 'Pool' : 'Ephemeral'}`);
-                showMultiStrategyConfig(chatId, strategyId);
-            } catch (error) {
-                bot.sendMessage(chatId, `❌ ${error.message}`);
-            }
-            break;
-            
-        case 'jito':
-            try {
-                const currentJito = strategy.config.useJito || false;
-                multiStrategyManager.updateStrategyConfig(strategyId, { useJito: !currentJito });
-                bot.sendMessage(chatId, `✅ Jito: ${!currentJito ? 'ON' : 'OFF'}`);
-                showMultiStrategyConfig(chatId, strategyId);
-            } catch (error) {
-                bot.sendMessage(chatId, `❌ ${error.message}`);
-            }
-            break;
-            
-        case 'provider':
-            bot.sendMessage(chatId, '🔌 Select swap provider:', {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Solana Tracker', callback_data: `multi_prov_${strategyId}_SOLANA_TRACKER` }],
-                        [{ text: 'Jupiter', callback_data: `multi_prov_${strategyId}_JUPITER` }],
-                        [{ text: 'Raydium', callback_data: `multi_prov_${strategyId}_RAYDIUM` }],
-                        [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
-                    ]
-                }
-            });
-            break;
-            
-        case 'dex':
-            bot.sendMessage(chatId, '🎯 Select target DEX:', {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: 'Raydium AMM', callback_data: `multi_dex_${strategyId}_RAYDIUM_AMM` }],
-                        [{ text: 'Raydium CLMM', callback_data: `multi_dex_${strategyId}_RAYDIUM_CLMM` }],
-                        [{ text: 'Pump.fun', callback_data: `multi_dex_${strategyId}_PUMP_FUN` }],
-                        [{ text: 'Orca', callback_data: `multi_dex_${strategyId}_ORCA_WHIRLPOOL` }],
-                        [{ text: 'Meteora DLMM', callback_data: `multi_dex_${strategyId}_METEORA_DLMM` }],
-                        [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
-                    ]
-                }
-            });
-            break;
-            
-        default:
-            bot.sendMessage(chatId, `❌ Unknown setting: ${settingType}`);
-    }
-}
-
-// ======================== MULTI-STRATEGY EXECUTION FUNCTIONS ========================
-
-function createMultiStrategy(chatId, strategyType) {
-    try {
-        if (!STATE.tokenAddress) {
-            return bot.sendMessage(chatId, `❌ Please set token address first in Settings`, { parse_mode: 'Markdown' });
-        }
-        
-        const strategyId = `${strategyType.toLowerCase()}_${Date.now()}`;
-        const strategyName = `${strategyType} ${new Date().toLocaleTimeString()}`;
-        
-        // Use current STATE configuration as defaults
-        const config = {
-            name: strategyName,
-            strategyType: strategyType,
-            tokenAddress: STATE.tokenAddress,
-            minBuyAmount: STATE.minBuyAmount,
-            maxBuyAmount: STATE.maxBuyAmount,
-            priorityFee: STATE.priorityFee,
-            slippage: STATE.slippage,
-            numberOfCycles: STATE.numberOfCycles,
-            intervalBetweenActions: STATE.intervalBetweenActions,
-            jitterPercentage: STATE.jitterPercentage,
-            useJito: STATE.useJito,
-            jitoTipAmount: STATE.jitoTipAmount,
-            swapProvider: STATE.swapProvider,
-            targetDex: STATE.targetDex,
-            walletCount: 50, // Default 50 wallets per strategy
-            fundAmountPerWallet: STATE.fundAmountPerWallet,
-            walletsPerCycle: STATE.walletsPerCycle,
-            batchConcurrency: STATE.batchConcurrency,
-            useWalletPool: true // Default to wallet pool mode
-        };
-        
-        const strategy = multiStrategyManager.createStrategy(strategyId, config);
-        
-        bot.sendMessage(chatId,
-            `✅ *Strategy Created*\n\n` +
-            `Name: \`${strategy.name}\`\n` +
-            `Type: \`${strategy.type}\`\n` +
-            `ID: \`${strategy.id}\`\n` +
-            `Mode: \`${config.useWalletPool ? 'Wallet Pool' : 'Ephemeral'}\`\n\n` +
-            `⚠️ Assign wallets before starting!`,
-            { parse_mode: 'Markdown' }
-        );
-        
-        showStrategyDetails(chatId, strategyId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Create error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to create strategy: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-async function startMultiStrategy(chatId, strategyId) {
-    try {
-        const strategy = multiStrategyManager.getStrategy(strategyId);
-        if (!strategy) {
-            return bot.sendMessage(chatId, `❌ Strategy not found`, { parse_mode: 'Markdown' });
-        }
-        
-        // Auto-assign wallets if none assigned
-        if (strategy.wallets.assigned.length === 0) {
-            const totalWallets = walletManager.size;
-            const strategies = multiStrategyManager.getAllStrategies();
-            const walletsPerStrategy = Math.floor(totalWallets / (strategies.length + 1));
-            
-            // Find unassigned wallets
-            const assignedPubkeys = new Set();
-            for (const s of strategies) {
-                const strat = multiStrategyManager.getStrategy(s.id);
-                strat.wallets.assigned.forEach(w => assignedPubkeys.add(w));
-            }
-            
-            const unassignedWallets = walletManager.allWallets
-                .filter(w => !assignedPubkeys.has(w.publicKey.toBase58()))
-                .slice(0, Math.min(walletsPerStrategy, 50))
-                .map(w => w.publicKey.toBase58());
-            
-            if (unassignedWallets.length === 0) {
-                return bot.sendMessage(chatId, `❌ No unassigned wallets available. Use wallet allocation menu.`, { parse_mode: 'Markdown' });
-            }
-            
-            multiStrategyManager.assignWallets(strategyId, unassignedWallets);
-            bot.sendMessage(chatId, `✅ Auto-assigned ${unassignedWallets.length} wallets`, { parse_mode: 'Markdown' });
-        }
-        
-        // Start strategy execution
-        await multiStrategyManager.startStrategy(strategyId, async (strategy) => {
-            return executeMultiStrategyInstance(strategy, chatId);
-        });
-        
-        bot.sendMessage(chatId, `▶️ Strategy *${strategy.name}* started!`, { parse_mode: 'Markdown' });
-        showStrategyDetails(chatId, strategyId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Start error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to start: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function stopMultiStrategy(chatId, strategyId) {
-    try {
-        multiStrategyManager.stopStrategy(strategyId, 'User stopped');
-        bot.sendMessage(chatId, `⏹️ Strategy stopped`, { parse_mode: 'Markdown' });
-        showStrategyDetails(chatId, strategyId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Stop error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to stop: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function pauseMultiStrategy(chatId, strategyId) {
-    try {
-        multiStrategyManager.pauseStrategy(strategyId);
-        bot.sendMessage(chatId, `⏸️ Strategy paused`, { parse_mode: 'Markdown' });
-        showStrategyDetails(chatId, strategyId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Pause error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to pause: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function resumeMultiStrategy(chatId, strategyId) {
-    try {
-        multiStrategyManager.resumeStrategy(strategyId);
-        bot.sendMessage(chatId, `▶️ Strategy resumed`, { parse_mode: 'Markdown' });
-        showStrategyDetails(chatId, strategyId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Resume error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to resume: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function deleteMultiStrategy(chatId, strategyId) {
-    try {
-        const strategy = multiStrategyManager.getStrategy(strategyId);
-        if (strategy && strategy.status === 'RUNNING') {
-            return bot.sendMessage(chatId, `❌ Stop the strategy before deleting`, { parse_mode: 'Markdown' });
-        }
-        
-        multiStrategyManager.deleteStrategy(strategyId);
-        bot.sendMessage(chatId, `🗑️ Strategy deleted`, { parse_mode: 'Markdown' });
-        showStrategyList(chatId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Delete error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to delete: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function autoAllocateWallets(chatId) {
-    try {
-        const strategies = multiStrategyManager.getAllStrategies();
-        if (strategies.length === 0) {
-            return bot.sendMessage(chatId, `❌ No strategies to allocate wallets to`, { parse_mode: 'Markdown' });
-        }
-        
-        const totalWallets = walletManager.size;
-        const walletsPerStrategy = Math.floor(totalWallets / strategies.length);
-        
-        let allocated = 0;
-        strategies.forEach((s, index) => {
-            const startIndex = index * walletsPerStrategy;
-            const endIndex = Math.min(startIndex + walletsPerStrategy, totalWallets);
-            
-            const wallets = walletManager.allWallets
-                .slice(startIndex, endIndex)
-                .map(w => w.publicKey.toBase58());
-            
-            multiStrategyManager.assignWallets(s.id, wallets);
-            allocated += wallets.length;
-        });
-        
-        bot.sendMessage(chatId,
-            `✅ *Auto-Allocation Complete*\n\n` +
-            `Allocated ${allocated} wallets across ${strategies.length} strategies\n` +
-            `(~${walletsPerStrategy} wallets per strategy)`,
-            { parse_mode: 'Markdown' }
-        );
-        
-        showWalletAllocation(chatId);
-    } catch (error) {
-        logger.error(`[MultiStrategy] Auto-allocate error: ${error.message}`);
-        bot.sendMessage(chatId, `❌ Failed to allocate: ${error.message}`, { parse_mode: 'Markdown' });
-    }
-}
-
-function handleStrategyConfigSetting(chatId, strategyId, settingType) {
-    const strategy = multiStrategyManager.getStrategy(strategyId);
-    if (!strategy) {
-        return bot.sendMessage(chatId, `❌ Strategy not found`, { parse_mode: 'Markdown' });
-    }
-    
-    switch (settingType) {
-        case 'buyrange':
-            promptSetting(chatId, `💰 Enter buy range (min-max SOL):\nExample: \`0.01-0.05\``, (val) => {
-                const parts = val.split('-');
-                if (parts.length !== 2) {
-                    return bot.sendMessage(chatId, `❌ Invalid format. Use: min-max`);
-                }
-                const min = parseFloat(parts[0]);
-                const max = parseFloat(parts[1]);
-                if (isNaN(min) || isNaN(max) || min <= 0 || max <= min) {
-                    return bot.sendMessage(chatId, `❌ Invalid range`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, {
-                    minBuyAmount: min,
-                    maxBuyAmount: max
-                });
-                bot.sendMessage(chatId, `✅ Buy range set to ${min}-${max} SOL`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'cycles':
-            promptSetting(chatId, `🔁 Enter number of cycles (1-1000):`, (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 1 || num > 1000) {
-                    return bot.sendMessage(chatId, `❌ Invalid cycles. Must be 1-1000.`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { numberOfCycles: num });
-                bot.sendMessage(chatId, `✅ Cycles set to ${num}`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'delay':
-            promptSetting(chatId, `⏱ Enter delay between actions (seconds):`, (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 0) {
-                    return bot.sendMessage(chatId, `❌ Invalid delay`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { intervalBetweenActions: num * 1000 });
-                bot.sendMessage(chatId, `✅ Delay set to ${num}s`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'wallets':
-            promptSetting(chatId, `👥 Enter number of wallets for this strategy:`, (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 1) {
-                    return bot.sendMessage(chatId, `❌ Invalid wallet count`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { walletCount: num });
-                bot.sendMessage(chatId, `✅ Wallet count set to ${num}\n⚠️ Re-allocate wallets for changes to take effect`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'jitter':
-            promptSetting(chatId, `🎲 Enter jitter percentage (0-100%):`, (val) => {
-                const num = parseInt(val);
-                if (isNaN(num) || num < 0 || num > 100) {
-                    return bot.sendMessage(chatId, `❌ Invalid jitter (0-100)`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { jitterPercentage: num });
-                bot.sendMessage(chatId, `✅ Jitter set to ${num}%`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'slippage':
-            promptSetting(chatId, `📊 Enter slippage percentage (0-100%):`, (val) => {
-                const num = parseFloat(val);
-                if (isNaN(num) || num < 0 || num > 100) {
-                    return bot.sendMessage(chatId, `❌ Invalid slippage (0-100)`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { slippage: num });
-                bot.sendMessage(chatId, `✅ Slippage set to ${num}%`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'fee':
-            promptSetting(chatId, `💎 Enter priority fee (SOL):`, (val) => {
-                const num = parseFloat(val);
-                if (isNaN(num) || num < 0) {
-                    return bot.sendMessage(chatId, `❌ Invalid fee`);
-                }
-                multiStrategyManager.updateStrategyConfig(strategyId, { priorityFee: num });
-                bot.sendMessage(chatId, `✅ Priority fee set to ${num} SOL`);
-                showStrategyConfig(chatId, strategyId);
-            });
-            break;
-            
-        case 'jito':
-            const currentJito = strategy.config.useJito;
-            multiStrategyManager.updateStrategyConfig(strategyId, { useJito: !currentJito });
-            bot.sendMessage(chatId, `✅ Jito ${!currentJito ? 'enabled' : 'disabled'}`);
-            showStrategyConfig(chatId, strategyId);
-            break;
-            
-        case 'poolmode':
-            const currentPool = strategy.config.useWalletPool !== false;
-            multiStrategyManager.updateStrategyConfig(strategyId, { useWalletPool: !currentPool });
-            bot.sendMessage(chatId, `✅ Wallet pool mode ${!currentPool ? 'enabled' : 'disabled'}\n${!currentPool ? 'Using wallet pool' : 'Using ephemeral wallets'}`);
-            showStrategyConfig(chatId, strategyId);
-            break;
-            
-        case 'provider':
-            bot.sendMessage(chatId,
-                `🔌 *Select Swap Provider*`,
-                {
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: 'Solana Tracker', callback_data: `multi_prov_${strategyId}_SOLANA_TRACKER` }],
-                            [{ text: 'Jupiter', callback_data: `multi_prov_${strategyId}_JUPITER` }],
-                            [{ text: 'Raydium', callback_data: `multi_prov_${strategyId}_RAYDIUM` }],
-                            [{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]
-                        ]
-                    }
-                }
-            );
-            break;
-            
-        default:
-            bot.sendMessage(chatId, `❌ Unknown setting: ${settingType}`);
-    }
-}
-
-async function executeMultiStrategyInstance(strategy, chatId) {
-    logger.info(`[MultiStrategy] Starting execution for ${strategy.name} (${strategy.id})`);
-    
-    const connection = getConnection();
-    const strategyWallets = strategy.wallets.assigned.map(pubkey => {
-        return walletManager.allWallets.find(w => w.publicKey.toBase58() === pubkey);
-    }).filter(w => w !== undefined);
-    
-    if (strategyWallets.length === 0) {
-        logger.error(`[MultiStrategy] No wallets found for strategy ${strategy.id}`);
-        multiStrategyManager.stopStrategy(strategy.id, 'No wallets available');
-        return;
-    }
-    
-    try {
-        // Run strategy cycles
-        for (let cycle = 0; cycle < strategy.config.numberOfCycles; cycle++) {
-            if (strategy.status !== 'RUNNING') {
-                logger.info(`[MultiStrategy] Strategy ${strategy.id} stopped, breaking cycle loop`);
-                break;
-            }
-            
-            strategy.runtime.currentCycle = cycle + 1;
-            logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}/${strategy.config.numberOfCycles}`);
-            
-            // Execute buys with batch engine
-            await BatchSwapEngine.executeBatch(
-                strategyWallets.slice(0, strategy.config.walletsPerCycle),
-                async (wallet) => {
-                    if (strategy.status !== 'RUNNING') return null;
-                    
-                    const amount = getRandomFloat(
-                        strategy.config.minBuyAmount,
-                        strategy.config.maxBuyAmount
-                    );
-                    
-                    try {
-                        const balanceBefore = await getTokenBalance(
-                            connection,
-                            wallet.publicKey,
-                            strategy.config.tokenAddress
-                        );
-                        
-                        const txid = await swap(
-                            SOL_ADDR,
-                            strategy.config.tokenAddress,
-                            wallet,
-                            connection,
-                            amount,
-                            chatId,
-                            true
-                        );
-                        
-                        if (txid) {
-                            await sleep(1000);
-                            const balanceAfter = await getTokenBalance(
-                                connection,
-                                wallet.publicKey,
-                                strategy.config.tokenAddress
-                            );
-                            const tokensReceived = balanceAfter - balanceBefore;
-                            
-                            multiStrategyManager.recordBuy(
-                                strategy.id,
-                                wallet.publicKey.toBase58(),
-                                amount,
-                                tokensReceived,
-                                true
-                            );
-                            
-                            logger.info(`[MultiStrategy] ${strategy.name} - Buy success: ${amount} SOL -> ${tokensReceived} tokens`);
-                            return txid;
-                        }
-                    } catch (error) {
-                        logger.error(`[MultiStrategy] ${strategy.name} - Buy failed: ${error.message}`);
-                        multiStrategyManager.recordBuy(
-                            strategy.id,
-                            wallet.publicKey.toBase58(),
-                            amount,
-                            0,
-                            false
-                        );
-                    }
-                    return null;
-                },
-                strategy.config.batchConcurrency || 10,
-                null,
-                () => strategy.status === 'RUNNING'
-            );
-            
-            // Wait between cycles
-            if (cycle < strategy.config.numberOfCycles - 1 && strategy.status === 'RUNNING') {
-                await sleep(strategy.config.intervalBetweenActions);
-            }
-        }
-        
-        // Strategy completed all cycles
-        if (strategy.status === 'RUNNING') {
-            multiStrategyManager.stopStrategy(strategy.id, 'Completed all cycles');
-            logger.info(`[MultiStrategy] ${strategy.name} completed successfully`);
-            
-            if (chatId) {
-                bot.sendMessage(chatId,
-                    `✅ *Strategy Completed*\n\n` +
-                    `${strategy.name} finished all ${strategy.config.numberOfCycles} cycles\n\n` +
-                    `Buys: ${strategy.stats.successfulBuys}/${strategy.stats.totalBuys}\n` +
-                    `P&L: ${strategy.stats.profitLoss.toFixed(4)} SOL`,
-                    { parse_mode: 'Markdown' }
-                );
-            }
-        }
-    } catch (error) {
-        logger.error(`[MultiStrategy] Execution error for ${strategy.name}: ${error.message}`);
-        multiStrategyManager.stopStrategy(strategy.id, `Error: ${error.message}`);
-        
-        if (chatId) {
-            bot.sendMessage(chatId,
-                `❌ *Strategy Error*\n\n${strategy.name}: ${error.message}`,
-                { parse_mode: 'Markdown' }
-            );
-        }
-    }
-}
-
 // ======================== TELEGRAM CALLBACK HANDLER ========================
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
@@ -3766,9 +2397,7 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'settings') showSettingsMenu(chatId);
     else if (action === 'settings_basic') showBasicSettings(chatId);
     else if (action === 'settings_advanced') showAdvancedSettings(chatId);
-    else if (action === 'settings_strat') showStrategySettings(chatId);
-    else if (action === 'settings_strat_select') showStrategyMenu(chatId);
-    else if (action === 'config_strat') showStrategyConfig(chatId, STATE.strategy);
+    else if (action === 'settings_strat') showStrategyMenu(chatId);
     else if (action === 'show_realism') showRealismMenu(chatId);
     else if (action === 'settings_jito') showJitoSettings(chatId);
     else if (action === 'stealth_settings') showStealthSettings(chatId);
@@ -3780,81 +2409,6 @@ bot.on('callback_query', async (callbackQuery) => {
     else if (action === 'status') await showDashboard(chatId);
     else if (action === 'show_wallet') showWallet(chatId);
     else if (action === 'smart_sell_menu') showSmartSellMenu(chatId);
-
-    // Multi-Strategy handlers
-    else if (action === 'multi_main') showMultiStrategyMenu(chatId);
-    else if (action === 'multi_list') showStrategyList(chatId);
-    else if (action === 'multi_create') showCreateStrategyMenu(chatId);
-    else if (action === 'multi_stats') showMultiStrategyStats(chatId);
-    else if (action === 'multi_wallets') showWalletAllocation(chatId);
-    else if (action.startsWith('multi_view_')) {
-        const strategyId = action.replace('multi_view_', '');
-        showStrategyDetails(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_start_')) {
-        const strategyId = action.replace('multi_start_', '');
-        await startMultiStrategy(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_stop_')) {
-        const strategyId = action.replace('multi_stop_', '');
-        stopMultiStrategy(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_pause_')) {
-        const strategyId = action.replace('multi_pause_', '');
-        pauseMultiStrategy(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_resume_')) {
-        const strategyId = action.replace('multi_resume_', '');
-        resumeMultiStrategy(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_delete_')) {
-        const strategyId = action.replace('multi_delete_', '');
-        deleteMultiStrategy(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_create_')) {
-        const strategyType = action.replace('multi_create_', '');
-        createMultiStrategy(chatId, strategyType);
-    }
-    else if (action === 'multi_auto_allocate') {
-        autoAllocateWallets(chatId);
-    }
-    else if (action.startsWith('multi_config_')) {
-        const strategyId = action.replace('multi_config_', '');
-        showMultiStrategyConfig(chatId, strategyId);
-    }
-    else if (action.startsWith('multi_cfg_')) {
-        // Format: multi_cfg_<setting>_<strategyId>
-        const parts = action.replace('multi_cfg_', '').split('_');
-        const settingType = parts[0];
-        const strategyId = parts.slice(1).join('_');
-        handleMultiStrategyConfigSetting(chatId, strategyId, settingType);
-    }
-    else if (action.startsWith('multi_prov_')) {
-        // Format: multi_prov_<strategyId>_<provider>
-        const parts = action.replace('multi_prov_', '').split('_');
-        const provider = parts.pop();
-        const strategyId = parts.join('_');
-        try {
-            multiStrategyManager.updateStrategyConfig(strategyId, { swapProvider: provider });
-            bot.sendMessage(chatId, `✅ Provider set to ${provider}`);
-            showMultiStrategyConfig(chatId, strategyId);
-        } catch (error) {
-            bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
-        }
-    }
-    else if (action.startsWith('multi_dex_')) {
-        // Format: multi_dex_<strategyId>_<dex>
-        const parts = action.replace('multi_dex_', '').split('_');
-        const dex = parts.pop();
-        const strategyId = parts.join('_');
-        try {
-            multiStrategyManager.updateStrategyConfig(strategyId, { targetDex: dex });
-            bot.sendMessage(chatId, `✅ DEX set to ${dex}`);
-            showMultiStrategyConfig(chatId, strategyId);
-        } catch (error) {
-            bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
-        }
-    }
 
     // Strategy selection
     else if (action.startsWith('strat_')) {
@@ -3869,524 +2423,10 @@ bot.on('callback_query', async (callbackQuery) => {
         };
         STATE.strategy = stratMap[action] || 'STANDARD';
         saveConfig();
-        // Just select the strategy, don't show configuration
-        // Configuration only happens in Settings > Strategy Config
-        bot.sendMessage(chatId, `✅ Strategy: *${STATE.strategy}*\n\n💡 To configure this strategy, go to:\nSettings → 🎯 Strategy Config`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ Strategy: *${STATE.strategy}*`, { parse_mode: 'Markdown' });
         showStrategyMenu(chatId);
     }
 
-    // Strategy Config Handlers - STANDARD
-    else if (action === 'config_std_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles (1-1000):', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1 || num > 1000) {
-                bot.sendMessage(chatId, '❌ Invalid cycles. Must be 1-1000.');
-            } else {
-                STATE.numberOfCycles = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Cycles set to ${num}`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-    else if (action === 'config_std_minbuy') {
-        promptSetting(chatId, '💰 Enter min buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (isNaN(num) || num <= 0) {
-                bot.sendMessage(chatId, '❌ Invalid amount.');
-            } else {
-                STATE.minBuyAmount = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Min buy set to ${num} SOL`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-    else if (action === 'config_std_maxbuy') {
-        promptSetting(chatId, '💰 Enter max buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (isNaN(num) || num <= 0) {
-                bot.sendMessage(chatId, '❌ Invalid amount.');
-            } else {
-                STATE.maxBuyAmount = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Max buy set to ${num} SOL`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-    else if (action === 'config_std_delay') {
-        promptSetting(chatId, '⏱ Enter delay between buys (seconds):', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 0) {
-                bot.sendMessage(chatId, '❌ Invalid delay.');
-            } else {
-                STATE.intervalBetweenActions = num * 1000;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Delay set to ${num}s`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-    else if (action === 'config_std_jitter') {
-        promptSetting(chatId, '🎲 Enter jitter percentage (0-100%):', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 0 || num > 100) {
-                bot.sendMessage(chatId, '❌ Invalid jitter (0-100).');
-            } else {
-                STATE.jitterPercentage = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Jitter set to ${num}%`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-    else if (action === 'config_std_wallets') {
-        promptSetting(chatId, '👥 Enter wallets per cycle:', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1) {
-                bot.sendMessage(chatId, '❌ Invalid wallet count.');
-            } else {
-                STATE.walletsPerCycle = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Wallets set to ${num}`);
-                showConfigStandard(chatId);
-            }
-        });
-    }
-
-    // Strategy Config Handlers - MAKER
-    else if (action === 'config_mkr_wallets') {
-        promptSetting(chatId, '👥 Enter wallets for maker strategy:', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1) {
-                bot.sendMessage(chatId, '❌ Invalid wallet count.');
-            } else {
-                STATE.walletsPerCycle = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Wallets set to ${num}`);
-                showConfigMaker(chatId);
-            }
-        });
-    }
-    else if (action === 'config_mkr_fundamt') {
-        promptSetting(chatId, '💵 Enter fund amount per wallet (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (isNaN(num) || num <= 0) {
-                bot.sendMessage(chatId, '❌ Invalid amount.');
-            } else {
-                STATE.fundAmountPerWallet = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Fund amount set to ${num} SOL`);
-                showConfigMaker(chatId);
-            }
-        });
-    }
-    else if (action === 'config_mkr_depth') {
-        promptSetting(chatId, '🔗 Enter chain depth (1-5):', (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1 || num > 5) {
-                bot.sendMessage(chatId, '❌ Invalid depth (1-5).');
-            } else {
-                STATE.makerFundingChainDepth = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Chain depth set to ${num}`);
-                showConfigMaker(chatId);
-            }
-        });
-    }
-
-    // Quick handlers for other strategies (condensed)
-    else if (action === 'config_web_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigWeb(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_web_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigWeb(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_spm_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigSpam(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_spm_microamt') {
-        promptSetting(chatId, '💸 Enter micro buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.spamMicroBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigSpam(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_spm_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigSpam(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_spm_delay') {
-        promptSetting(chatId, '⏱ Enter delay (seconds):', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num >= 0) { STATE.intervalBetweenActions = num * 1000; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}s`); showConfigSpam(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-
-    // More strategy config handlers
-    else if (action === 'config_pd_buyamt') {
-        promptSetting(chatId, '🚀 Enter buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.maxBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigPumpDump(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_pd_sellpct') {
-        promptSetting(chatId, '📉 Enter sell percentage:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0 && num <= 100) { STATE.whaleSellPercent = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}%`); showConfigPumpDump(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid (1-100)');
-        });
-    }
-    else if (action === 'config_pd_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigPumpDump(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_pd_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigPumpDump(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-
-    // Chart, Holder, Whale configs
-    else if (action === 'config_chr_pattern') {
-        promptSetting(chatId, '📐 Enter chart pattern type:', (val) => {
-            if (val.length > 0) { STATE.chartPattern = val; saveConfig(); bot.sendMessage(chatId, `✅ Pattern set`); showConfigChart(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_chr_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigChart(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_hldr_wallets') {
-        promptSetting(chatId, '👥 Enter holder wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.holderWallets = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigHolder(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_hldr_buyamt') {
-        promptSetting(chatId, '💰 Enter buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.holderBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigHolder(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_whl_buyamt') {
-        promptSetting(chatId, '🐋 Enter whale buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.whaleBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigWhale(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_whl_dumppct') {
-        promptSetting(chatId, '📉 Enter dump percentage:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0 && num <= 100) { STATE.whaleSellPercent = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}%`); showConfigWhale(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid (1-100)');
-        });
-    }
-    else if (action === 'config_whl_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigWhale(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_whl_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigWhale(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-
-    // Volume, Trending, Jito configs
-    else if (action === 'config_vb_mult') {
-        promptSetting(chatId, '📊 Enter multiplier:', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.volumeBoostMultiplier = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}x`); showConfigVolumeBoost(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_vb_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.volumeBoostCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigVolumeBoost(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_vb_amtrange') {
-        promptSetting(chatId, '💰 Enter min-max amount (e.g: 0.5-2):', (val) => {
-            const parts = val.split('-');
-            const min = parseFloat(parts[0]);
-            const max = parseFloat(parts[1]);
-            if (!isNaN(min) && !isNaN(max) && min > 0 && max > min) { 
-                STATE.volumeBoostMinAmount = min;
-                STATE.volumeBoostMaxAmount = max;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Set to ${min}-${max}`);
-                showConfigVolumeBoost(chatId);
-            }
-            else bot.sendMessage(chatId, '❌ Invalid format');
-        });
-    }
-    else if (action === 'config_trnd_mode') {
-        showTrendingModeMenu(chatId);
-    }
-    else if (action === 'config_trnd_mode_viral') {
-        STATE.trendingMode = 'VIRAL_PUMP';
-        saveConfig();
-        bot.sendMessage(chatId, `✅ Trending Mode: *🚀 Viral Pump*`, { parse_mode: 'Markdown' });
-        showConfigTrending(chatId);
-    }
-    else if (action === 'config_trnd_mode_organic') {
-        STATE.trendingMode = 'ORGANIC_GROWTH';
-        saveConfig();
-        bot.sendMessage(chatId, `✅ Trending Mode: *🌱 Organic Growth*`, { parse_mode: 'Markdown' });
-        showConfigTrending(chatId);
-    }
-    else if (action === 'config_trnd_mode_fomo') {
-        STATE.trendingMode = 'FOMO_WAVE';
-        saveConfig();
-        bot.sendMessage(chatId, `✅ Trending Mode: *🌊 FOMO Wave*`, { parse_mode: 'Markdown' });
-        showConfigTrending(chatId);
-    }
-    else if (action === 'config_trnd_mode_ladder') {
-        STATE.trendingMode = 'LIQUIDITY_LADDER';
-        saveConfig();
-        bot.sendMessage(chatId, `✅ Trending Mode: *📊 Liquidity Ladder*`, { parse_mode: 'Markdown' });
-        showConfigTrending(chatId);
-    }
-    else if (action === 'back_trending_config') {
-        showConfigTrending(chatId);
-    }
-    else if (action === 'config_trnd_intensity') {
-        promptSetting(chatId, '⚡ Enter intensity level:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.trendingIntensity = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigTrending(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_trnd_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigTrending(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_jmw_toggle') {
-        STATE.useJito = !STATE.useJito;
-        saveConfig();
-        bot.sendMessage(chatId, `✅ Jito ${STATE.useJito ? 'enabled' : 'disabled'}`);
-        showConfigJitoWash(chatId);
-    }
-    else if (action === 'config_jmw_tip') {
-        promptSetting(chatId, '💵 Enter Jito tip amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num >= 0) { STATE.jitoTipAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigJitoWash(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_jmw_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigJitoWash(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_jmw_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigJitoWash(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-
-    // KOL, Bull Trap, Airdrop, Ladder configs
-    else if (action === 'config_kol_swarm') {
-        promptSetting(chatId, '👥 Enter swarm size:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.kolRetailSwarmSize = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigKol(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_kol_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigKol(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_bt_slip') {
-        promptSetting(chatId, '📊 Enter slippage percentage:', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num >= 0 && num <= 100) { STATE.bullTrapSlippage = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}%`); showConfigBullTrap(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid (0-100)');
-        });
-    }
-    else if (action === 'config_bt_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigBullTrap(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_bt_buyamt') {
-        promptSetting(chatId, '💰 Enter buy amount (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.maxBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigBullTrap(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_air_count') {
-        promptSetting(chatId, '🎁 Enter airdrop wallet count:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.airdropWalletCount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigAirdrop(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_air_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigAirdrop(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_ldr_steps') {
-        promptSetting(chatId, '🪜 Enter ladder steps:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.ladderSteps = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigLadder(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_ldr_mult') {
-        promptSetting(chatId, '📈 Enter multiplier:', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.ladderBuyMultiplier = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}x`); showConfigLadder(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_ldr_minbuy') {
-        promptSetting(chatId, '💰 Enter min buy (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.minBuyAmount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigLadder(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-
-    // Sniper, Advanced Wash, Mirror, Curve configs
-    else if (action === 'config_snp_speed') {
-        promptSetting(chatId, '⚡ Enter entry speed (milliseconds):', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.sniperEntrySpeedMs = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}ms`); showConfigSniper(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_snp_holdtime') {
-        promptSetting(chatId, '⏱ Enter hold time range (e.g: 5-30 seconds):', (val) => {
-            const parts = val.split('-');
-            const min = parseInt(parts[0]);
-            const max = parseInt(parts[1]);
-            if (!isNaN(min) && !isNaN(max) && min > 0 && max > min) { 
-                STATE.sniperHoldTimeMin = min;
-                STATE.sniperHoldTimeMax = max;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Set to ${min}-${max}s`);
-                showConfigSniper(chatId);
-            }
-            else bot.sendMessage(chatId, '❌ Invalid format');
-        });
-    }
-    else if (action === 'config_snp_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigSniper(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_awsh_groups') {
-        promptSetting(chatId, '👥 Enter wash group count:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.washGroupCount = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigAdvWash(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_awsh_cycles') {
-        promptSetting(chatId, '🔄 Enter cycles per group:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.washCyclesPerGroup = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigAdvWash(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_mir_count') {
-        promptSetting(chatId, '🐳 Enter number of top holders to mimic:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.mirrorTopHolders = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigMirror(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_mir_thresh') {
-        promptSetting(chatId, '📊 Enter buy threshold (SOL):', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.mirrorBuyThresholdSOL = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigMirror(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_mir_cycles') {
-        promptSetting(chatId, '🔁 Enter cycles:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.numberOfCycles = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigMirror(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_crv_target') {
-        promptSetting(chatId, '📈 Enter target percentage:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.curveTargetPercent = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}%`); showConfigCurve(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_crv_intensity') {
-        promptSetting(chatId, '⚡ Enter intensity multiplier:', (val) => {
-            const num = parseFloat(val);
-            if (!isNaN(num) && num > 0) { STATE.curveBuyIntensity = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}x`); showConfigCurve(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
-    else if (action === 'config_crv_wallets') {
-        promptSetting(chatId, '👥 Enter wallets:', (val) => {
-            const num = parseInt(val);
-            if (!isNaN(num) && num > 0) { STATE.walletsPerCycle = num; saveConfig(); bot.sendMessage(chatId, `✅ Set to ${num}`); showConfigCurve(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
-        });
-    }
     // Provider & DEX
     else if (action === 'prov_tracker') { STATE.swapProvider = 'SOLANA_TRACKER'; saveConfig(); bot.sendMessage(chatId, `✅ Provider: *SolanaTracker*`, { parse_mode: 'Markdown' }); showProviderMenu(chatId); }
     else if (action === 'prov_trade') { STATE.swapProvider = 'SOLANA_TRADE'; saveConfig(); bot.sendMessage(chatId, `✅ Provider: *SolanaTrade*`, { parse_mode: 'Markdown' }); showProviderMenu(chatId); }
@@ -4445,28 +2485,12 @@ bot.on('callback_query', async (callbackQuery) => {
     }
     else if (action === 'set_batch_concurrency') {
         promptSetting(chatId, `Reply with *Concurrency* (1-100):`, (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1 || num > 100) {
-                bot.sendMessage(chatId, `❌ Please enter a number between 1 and 100.`);
-            } else {
-                STATE.batchConcurrency = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Concurrency: \`${STATE.batchConcurrency}\``);
-            }
-            showAdvancedSettings(chatId);
+            STATE.batchConcurrency = Math.max(1, Math.min(100, parseInt(val))); saveConfig(); bot.sendMessage(chatId, `✅ Concurrency: \`${STATE.batchConcurrency}\``); showAdvancedSettings(chatId);
         });
     }
     else if (action === 'set_wallets_per_cycle') {
         promptSetting(chatId, `Reply with *Wallets/Cycle* (1-1000):`, (val) => {
-            const num = parseInt(val);
-            if (isNaN(num) || num < 1 || num > 1000) {
-                bot.sendMessage(chatId, `❌ Please enter a number between 1 and 1000.`);
-            } else {
-                STATE.walletsPerCycle = num;
-                saveConfig();
-                bot.sendMessage(chatId, `✅ Wallets/Cycle: \`${STATE.walletsPerCycle}\``);
-            }
-            showAdvancedSettings(chatId);
+            STATE.walletsPerCycle = Math.max(1, parseInt(val)); saveConfig(); bot.sendMessage(chatId, `✅ Wallets/Cycle: \`${STATE.walletsPerCycle}\``); showAdvancedSettings(chatId);
         });
     }
     else if (action === 'set_sync') {
@@ -4526,19 +2550,13 @@ bot.on('callback_query', async (callbackQuery) => {
         const estCost = (walletManager.size * STATE.fundAmountPerWallet).toFixed(2);
         promptSetting(chatId, `💰 *Fund Pool*\n\nWallets: \`${walletManager.size}\`\nPer wallet: \`${STATE.fundAmountPerWallet}\` SOL\n*Est. cost: \`${estCost}\` SOL*\n\nReply \`YES\` to confirm:`, async (val) => {
             if (val.toUpperCase() !== 'YES') return bot.sendMessage(chatId, `❌ Cancelled.`);
-            try {
-                await withRpcFallback(async (connection) => {
-                    bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets...`);
-                    // Manual funding should only check for shutdown, not if a strategy is "running"
-                    const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
-                    bot.sendMessage(chatId, `✅ Funding complete. ${result.successes} succeeded, ${result.failures} failed.`);
-                    showWalletPoolMenu(chatId);
-                });
-            } catch (error) {
-                logger.error(`Pool fund error: ${error.message}`);
-                bot.sendMessage(chatId, `❌ Funding failed: ${error.message}`);
+            await withRpcFallback(async (connection) => {
+                bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets...`);
+                // Manual funding should only check for shutdown, not if a strategy is "running"
+                const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+                bot.sendMessage(chatId, `✅ Funding complete. ${result.successes} succeeded, ${result.failures} failed.`);
                 showWalletPoolMenu(chatId);
-            }
+            });
         });
     }
     else if (action === 'pool_drain') {
@@ -4546,64 +2564,51 @@ bot.on('callback_query', async (callbackQuery) => {
         if (!masterKeypair) return bot.sendMessage(chatId, `❌ No master wallet.`);
         promptSetting(chatId, `🔄 *Drain Pool*\n\nReply \`YES\` to confirm:`, async (val) => {
             if (val.toUpperCase() !== 'YES') return bot.sendMessage(chatId, `❌ Cancelled.`);
-            try {
-                await withRpcFallback(async (connection) => {
-                    bot.sendMessage(chatId, `🔄 Draining ${walletManager.size} wallets...`);
-                    // Manual draining should only check for shutdown, not if a strategy is "running"
-                    await walletManager.drainAll(connection, masterKeypair, sendSOL, STATE.batchConcurrency, null, () => !isShuttingDown);
-                    bot.sendMessage(chatId, `✅ Drain complete.`);
-                    showWalletPoolMenu(chatId);
-                });
-            } catch (error) {
-                logger.error(`Pool drain error: ${error.message}`);
-                bot.sendMessage(chatId, `❌ Drain failed: ${error.message}`);
+            await withRpcFallback(async (connection) => {
+                bot.sendMessage(chatId, `🔄 Draining ${walletManager.size} wallets...`);
+                // Manual draining should only check for shutdown, not if a strategy is "running"
+                await walletManager.drainAll(connection, masterKeypair, sendSOL, STATE.batchConcurrency, null, () => !isShuttingDown);
                 showWalletPoolMenu(chatId);
-            }
+            });
         });
     }
     else if (action === 'pool_scan') {
-        try {
-            await withRpcFallback(async (connection) => {
-                bot.sendMessage(chatId, `📊 Scanning ${walletManager.size} wallets...`);
+        await withRpcFallback(async (connection) => {
+            bot.sendMessage(chatId, `📊 Scanning ${walletManager.size} wallets...`);
+            
+            // Scan with details enabled
+            const scan = await walletManager.scanBalances(connection, 30, true);
+            
+            // Build summary message
+            let message = `📊 *Scan Complete*\n\n`;
+            message += `Total SOL: \`${scan.totalSOL.toFixed(4)}\`\n`;
+            message += `Funded: \`${scan.funded}\` | Empty: \`${scan.empty}\`\n`;
+            message += `Duration: \`${scan.duration}s\`\n\n`;
+            
+            // Add detailed wallet list (limit to prevent message too long)
+            const maxWalletsToShow = 20;
+            if (scan.walletDetails && scan.walletDetails.length > 0) {
+                message += `*Wallet Details:*\n`;
                 
-                // Scan with details enabled
-                const scan = await walletManager.scanBalances(connection, 30, true);
-                
-                // Build summary message
-                let message = `📊 *Scan Complete*\n\n`;
-                message += `Total SOL: \`${scan.totalSOL.toFixed(4)}\`\n`;
-                message += `Funded: \`${scan.funded}\` | Empty: \`${scan.empty}\`\n`;
-                message += `Duration: \`${scan.duration}s\`\n\n`;
-                
-                // Add detailed wallet list (limit to prevent message too long)
-                const maxWalletsToShow = 20;
-                if (scan.walletDetails && scan.walletDetails.length > 0) {
-                    message += `*Wallet Details:*\n`;
-                    
-                    const walletsToShow = scan.walletDetails.slice(0, maxWalletsToShow);
-                    for (const wallet of walletsToShow) {
-                        const addr = wallet.address.substring(0, 8) + '...' + wallet.address.substring(wallet.address.length - 4);
-                        message += `${wallet.status} \`${addr}\` | ${wallet.balance.toFixed(6)} SOL\n`;
-                    }
-                    
-                    if (scan.walletDetails.length > maxWalletsToShow) {
-                        message += `\n_...and ${scan.walletDetails.length - maxWalletsToShow} more wallets_\n`;
-                    }
-                    
-                    // Add summary by status
-                    message += `\n*Summary:*\n`;
-                    message += `✅ Funded (≥0.0021 SOL): ${scan.funded}\n`;
-                    message += `❌ Empty (<0.0021 SOL): ${scan.empty}\n`;
+                const walletsToShow = scan.walletDetails.slice(0, maxWalletsToShow);
+                for (const wallet of walletsToShow) {
+                    const addr = wallet.address.substring(0, 8) + '...' + wallet.address.substring(wallet.address.length - 4);
+                    message += `${wallet.status} \`${addr}\` | ${wallet.balance.toFixed(6)} SOL\n`;
                 }
                 
-                bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-                showWalletPoolMenu(chatId);
-            });
-        } catch (error) {
-            logger.error(`Pool scan error: ${error.message}`);
-            bot.sendMessage(chatId, `❌ Scan failed: ${error.message}`);
+                if (scan.walletDetails.length > maxWalletsToShow) {
+                    message += `\n_...and ${scan.walletDetails.length - maxWalletsToShow} more wallets_\n`;
+                }
+                
+                // Add summary by status
+                message += `\n*Summary:*\n`;
+                message += `✅ Funded (≥0.0021 SOL): ${scan.funded}\n`;
+                message += `❌ Empty (<0.0021 SOL): ${scan.empty}\n`;
+            }
+            
+            bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
             showWalletPoolMenu(chatId);
-        }
+        });
     }
     else if (action === 'pool_toggle') { STATE.useWalletPool = !STATE.useWalletPool; saveConfig(); bot.sendMessage(chatId, `✅ Pool Mode: *${STATE.useWalletPool ? 'ON' : 'OFF'}*`, { parse_mode: 'Markdown' }); showWalletPoolMenu(chatId); }
     
@@ -4899,17 +2904,6 @@ bot.on('callback_query', async (callbackQuery) => {
         bot.sendMessage(chatId, `🗑️ Dev wallet cleared. Smart Sell will now use random holder wallets.`, { parse_mode: 'Markdown' });
         showSmartSellMenu(chatId);
     }
-    
-    
-    else if (action === 'none') {
-        // Silently ignore non-interactive buttons (descriptions, etc)
-        bot.answerCallbackQuery(callbackQuery.id).catch(() => { });
-    }
-    else {
-        // Log unhandled callback actions for debugging
-        logger.warn(`⚠️ Unhandled callback action: ${action}`);
-        bot.answerCallbackQuery(callbackQuery.id, { text: "❓ Action not recognized", show_alert: false }).catch(() => { });
-    }
 });
 
 // ─────────────────────────────────────────────
@@ -4920,16 +2914,8 @@ bot.onText(/\/start/, (msg) => {
     else bot.sendMessage(msg.chat.id, "⛔ Unauthorized access.", { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/multistrat/, (msg) => {
-    if (isAdmin(msg.chat.id)) showMultiStrategyMenu(msg.chat.id);
-    else bot.sendMessage(msg.chat.id, "⛔ Unauthorized access.", { parse_mode: 'Markdown' });
-});
-
-
 logger.info(`🚀 Volume Bot v3.2 started | Strategies: 19 | Wallets: ${walletManager.size.toLocaleString()}`);
 logger.info(`🌐 RPC: ${RPC_URLS.length} | Jito: ${STATE.useJito ? 'ON' : 'OFF'} | Stealth: Level ${STATE.fundingStealthLevel}`);
 logger.info(`🧠 Smart Sell: ${STATE.smartSellEnabled ? 'ENABLED' : 'DISABLED'} | Dev Wallet: ${STATE.smartSellDevWalletPubkey ? 'SET' : 'NOT SET'}`);
-logger.info(`🎯 Multi-Strategy Manager: ${multiStrategyManager.strategies.size} strategies loaded`);
-
 
 export { STATE, walletManager, swap, sendSOL, getTokenBalance, WalletPool, BatchSwapEngine, sendJitoBundle };

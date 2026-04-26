@@ -1,0 +1,52 @@
+{
+  "pump_dump_1777139768010": {
+    "id": "pump_dump_1777139768010",
+    "name": "PUMP_DUMP 6:56:08 PM",
+    "type": "PUMP_DUMP",
+    "createdAt": 1777139768167,
+    "status": "IDLE",
+    "config": {
+      "tokenAddress": "7LpvxqijqTHHAYkyRA8mNarFezHHmQWXFNbGs8GW1ray",
+      "minBuyAmount": 0.1,
+      "maxBuyAmount": 1,
+      "priorityFee": 0.0001,
+      "slippage": 10,
+      "numberOfCycles": 10,
+      "intervalBetweenActions": 5000,
+      "jitterPercentage": 20,
+      "useJito": false,
+      "jitoTipAmount": 0.00001,
+      "swapProvider": "SOLANA_TRADE",
+      "targetDex": "RAYDIUM_LAUNCHPAD",
+      "dedicatedWallets": [],
+      "walletCount": 50,
+      "fundAmountPerWallet": 0.002
+    },
+    "stats": {
+      "totalBuys": 0,
+      "totalSells": 0,
+      "successfulBuys": 0,
+      "successfulSells": 0,
+      "failedBuys": 0,
+      "failedSells": 0,
+      "totalSOLSpent": 0,
+      "totalSOLReceived": 0,
+      "totalTokensBought": 0,
+      "totalTokensSold": 0,
+      "profitLoss": 0,
+      "roi": 0
+    },
+    "wallets": {
+      "assigned": [],
+      "funded": [],
+      "active": [],
+      "available": []
+    },
+    "runtime": {
+      "startedAt": null,
+      "stoppedAt": null,
+      "currentCycle": 0,
+      "lastError": null
+    }
+  }
+}
