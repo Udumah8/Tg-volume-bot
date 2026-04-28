@@ -74,6 +74,8 @@ process.on('unhandledRejection', async (reason) => {
         msg.includes('chat not found') ||
         msg.includes('ECONNRESET') ||
         msg.includes('ENOTFOUND') ||
+        msg.includes('ETIMEDOUT') ||
+        msg.includes('connect ETIMEDOUT') ||
         msg.includes('fetch failed');
 
     if (isNonFatal) {
@@ -241,7 +243,21 @@ function loadConfig() {
 // ─────────────────────────────────────────────
 // 🤖 Telegram Bot Setup
 // ─────────────────────────────────────────────
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: { autoStart: true, interval: 300 } });
+const bot = new TelegramBot(TELEGRAM_TOKEN, { 
+    polling: { 
+        autoStart: true, 
+        interval: 300,
+        params: {
+            timeout: 10 // Reduce timeout from default 30s to 10s
+        }
+    },
+    request: {
+        agentOptions: {
+            keepAlive: true,
+            keepAliveMsecs: 10000
+        }
+    }
+});
 
 // Handle Telegram polling errors (ECONNRESET, network drops) without crashing
 bot.on('polling_error', (err) => {
@@ -255,6 +271,21 @@ bot.on('polling_error', (err) => {
         logger.error(`❌ Telegram polling error: ${msg}`);
     }
 });
+
+// Verify bot connection on startup
+(async () => {
+    try {
+        const me = await bot.getMe();
+        logger.info(`✅ Telegram Bot connected: @${me.username}`);
+    } catch (err) {
+        logger.error(`❌ Failed to connect to Telegram: ${err.message}`);
+        logger.warn(`⚠️ Bot will continue trying to connect in background...`);
+        logger.warn(`💡 If connection fails repeatedly, check:`);
+        logger.warn(`   1. Internet connection`);
+        logger.warn(`   2. Firewall/proxy settings`);
+        logger.warn(`   3. Telegram API token in .env`);
+    }
+})();
 
 // Master wallet
 let masterKeypair = null;
@@ -3090,7 +3121,8 @@ function showMultiStrategyConfig(chatId, strategyId) {
     msg += `• Cycles: \`${cfg.numberOfCycles}\`\n`;
     msg += `• Buy Range: \`${cfg.minBuyAmount}-${cfg.maxBuyAmount}\` SOL\n`;
     msg += `• Delay: \`${cfg.intervalBetweenActions / 1000}s\`\n`;
-    msg += `• Wallets: \`${cfg.walletCount}\`\n`;
+    msg += `• Total Wallets: \`${cfg.walletCount}\`\n`;
+    msg += `• Wallets/Cycle: \`${cfg.walletsPerCycle || cfg.walletCount}\`\n`;
     msg += `• Wallet Mode: \`${cfg.useWalletPool ? 'Pool' : 'Ephemeral'}\`\n\n`;
     
     msg += `*Advanced:*\n`;
@@ -3100,14 +3132,22 @@ function showMultiStrategyConfig(chatId, strategyId) {
     msg += `• Jito: ${cfg.useJito ? '🟢' : '🔴'}\n`;
     msg += `• Provider: \`${cfg.swapProvider}\`\n`;
     msg += `• DEX: \`${cfg.targetDex}\`\n`;
+    msg += `• Chart Pattern: \`${cfg.chartPattern || 'ASCENDING_TRIANGLE'}\`\n\n`;
+    
+    msg += `*Funding (Ephemeral Mode):*\n`;
+    msg += `• Web Funding: ${cfg.useWebFunding ? '🟢' : '🔴'}\n`;
+    msg += `• Stealth Level: \`${cfg.fundingStealthLevel || 0}\`\n`;
+    msg += `• Fund Amount: \`${cfg.fundAmountPerWallet}\` SOL\n`;
     
     const keyboard = [
         [{ text: '🔁 Cycles', callback_data: `multi_cfg_cycles_${strategyId}` }, { text: '💰 Buy Range', callback_data: `multi_cfg_buyrange_${strategyId}` }],
-        [{ text: '⏱ Delay', callback_data: `multi_cfg_delay_${strategyId}` }, { text: '👥 Wallets', callback_data: `multi_cfg_wallets_${strategyId}` }],
+        [{ text: '⏱ Delay', callback_data: `multi_cfg_delay_${strategyId}` }, { text: '👥 Total Wallets', callback_data: `multi_cfg_wallets_${strategyId}` }],
+        [{ text: '🔄 Wallets/Cycle', callback_data: `multi_cfg_walletspercycle_${strategyId}` }, { text: '💼 Wallet Mode', callback_data: `multi_cfg_walletmode_${strategyId}` }],
         [{ text: '🎲 Jitter', callback_data: `multi_cfg_jitter_${strategyId}` }, { text: '💎 Priority Fee', callback_data: `multi_cfg_fee_${strategyId}` }],
-        [{ text: '📊 Slippage', callback_data: `multi_cfg_slip_${strategyId}` }, { text: '🔄 Wallet Mode', callback_data: `multi_cfg_walletmode_${strategyId}` }],
-        [{ text: '🛡️ Jito Toggle', callback_data: `multi_cfg_jito_${strategyId}` }, { text: '🔌 Provider', callback_data: `multi_cfg_provider_${strategyId}` }],
-        [{ text: '🎯 DEX', callback_data: `multi_cfg_dex_${strategyId}` }],
+        [{ text: '📊 Slippage', callback_data: `multi_cfg_slip_${strategyId}` }, { text: '🛡️ Jito Toggle', callback_data: `multi_cfg_jito_${strategyId}` }],
+        [{ text: '🔌 Provider', callback_data: `multi_cfg_provider_${strategyId}` }, { text: '🎯 DEX', callback_data: `multi_cfg_dex_${strategyId}` }],
+        [{ text: '📐 Chart Pattern', callback_data: `multi_cfg_chartpattern_${strategyId}` }],
+        [{ text: '🕸️ Web Funding', callback_data: `multi_cfg_webfunding_${strategyId}` }, { text: '🕵️ Stealth Level', callback_data: `multi_cfg_stealthlevel_${strategyId}` }],
         [{ text: '🔙 Back to Strategy', callback_data: `multi_view_${strategyId}` }]
     ];
     
@@ -3202,6 +3242,23 @@ function handleMultiStrategyConfigSetting(chatId, strategyId, settingType) {
             });
             break;
             
+        case 'walletspercycle':
+            promptSetting(chatId, '🔄 Enter wallets per cycle (for ephemeral mode):', (val) => {
+                const num = parseInt(val);
+                if (isNaN(num) || num < 1) {
+                    bot.sendMessage(chatId, '❌ Invalid wallet count.');
+                } else {
+                    try {
+                        multiStrategyManager.updateStrategyConfig(strategyId, { walletsPerCycle: num });
+                        bot.sendMessage(chatId, `✅ Wallets per cycle set to ${num}\n💡 In ephemeral mode, only ${num} wallets will be funded per cycle.`);
+                        showMultiStrategyConfig(chatId, strategyId);
+                    } catch (error) {
+                        bot.sendMessage(chatId, `❌ ${error.message}`);
+                    }
+                }
+            });
+            break;
+            
         case 'jitter':
             promptSetting(chatId, '🎲 Enter jitter percentage (0-100):', (val) => {
                 const num = parseInt(val);
@@ -3275,6 +3332,34 @@ function handleMultiStrategyConfigSetting(chatId, strategyId, settingType) {
             }
             break;
             
+        case 'webfunding':
+            try {
+                const currentWebFunding = strategy.config.useWebFunding || false;
+                multiStrategyManager.updateStrategyConfig(strategyId, { useWebFunding: !currentWebFunding });
+                bot.sendMessage(chatId, `✅ Web Funding: ${!currentWebFunding ? 'ON' : 'OFF'}`);
+                showMultiStrategyConfig(chatId, strategyId);
+            } catch (error) {
+                bot.sendMessage(chatId, `❌ ${error.message}`);
+            }
+            break;
+            
+        case 'stealthlevel':
+            promptSetting(chatId, '🕵️ Enter stealth level (0-3):\n0=Direct, 1=Basic, 2=Advanced, 3=Maximum', (val) => {
+                const num = parseInt(val);
+                if (isNaN(num) || num < 0 || num > 3) {
+                    bot.sendMessage(chatId, '❌ Invalid stealth level (0-3).');
+                } else {
+                    try {
+                        multiStrategyManager.updateStrategyConfig(strategyId, { fundingStealthLevel: num });
+                        bot.sendMessage(chatId, `✅ Stealth level set to ${num}`);
+                        showMultiStrategyConfig(chatId, strategyId);
+                    } catch (error) {
+                        bot.sendMessage(chatId, `❌ ${error.message}`);
+                    }
+                }
+            });
+            break;
+            
         case 'provider':
             const currentProvider = strategy.config.swapProvider || 'SOLANA_TRACKER';
             bot.sendMessage(chatId, 
@@ -3322,6 +3407,34 @@ function handleMultiStrategyConfigSetting(chatId, strategyId, settingType) {
             });
             break;
             
+        case 'chartpattern':
+            const currentPattern = strategy.config.chartPattern || 'ASCENDING_TRIANGLE';
+            const patterns = [
+                ['ASCENDING_TRIANGLE', '📈 Ascending Triangle'],
+                ['DESCENDING_TRIANGLE', '📉 Descending Triangle'],
+                ['BULL_FLAG', '🚩 Bull Flag'],
+                ['BEAR_FLAG', '🏴 Bear Flag'],
+                ['CUP_AND_HANDLE', '☕ Cup & Handle'],
+                ['HEAD_AND_SHOULDERS', '👤 Head & Shoulders'],
+                ['DOUBLE_BOTTOM', '⏬ Double Bottom'],
+                ['DOUBLE_TOP', '⏫ Double Top'],
+                ['WEDGE_RISING', '📐 Rising Wedge'],
+                ['WEDGE_FALLING', '📐 Falling Wedge']
+            ];
+            const patternKeyboard = [];
+            for (const [val, label] of patterns) {
+                patternKeyboard.push([{ 
+                    text: (currentPattern === val ? '✅ ' : '') + label, 
+                    callback_data: `multi_pattern_${strategyId}_${val}` 
+                }]);
+            }
+            patternKeyboard.push([{ text: '🔙 Back', callback_data: `multi_config_${strategyId}` }]);
+            bot.sendMessage(chatId, `📐 *Chart Pattern*\nCurrent: *${currentPattern}*`, {
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: patternKeyboard }
+            });
+            break;
+            
         default:
             bot.sendMessage(chatId, `❌ Unknown setting: ${settingType}`);
     }
@@ -3358,7 +3471,10 @@ function createMultiStrategy(chatId, strategyType) {
             fundAmountPerWallet: STATE.fundAmountPerWallet,
             walletsPerCycle: STATE.walletsPerCycle,
             batchConcurrency: STATE.batchConcurrency,
-            useWalletPool: true // Default to wallet pool mode
+            useWalletPool: true, // Default to wallet pool mode
+            useWebFunding: STATE.useWebFunding || false, // Web funding for ephemeral mode
+            fundingStealthLevel: STATE.fundingStealthLevel || 2, // Stealth level for funding
+            chartPattern: STATE.chartPattern || 'ASCENDING_TRIANGLE' // Default chart pattern
         };
         
         const strategy = multiStrategyManager.createStrategy(strategyId, config);
@@ -3755,23 +3871,24 @@ async function executeMultiStrategyInstance(strategy, chatId) {
         logger.info(`[MultiStrategy] ${strategy.name} - Using ${strategyWallets.length} wallets from pool`);
     } else {
         // Ephemeral Mode: Generate temporary wallets
-        const walletCount = strategy.config.walletCount || 50;
+        const totalWallets = strategy.config.walletCount || 50;
+        const walletsPerCycle = strategy.config.walletsPerCycle || totalWallets;
         
-        // Limit ephemeral wallets to prevent rate limiting and resource issues
-        const maxEphemeralWallets = 100;
-        const actualWalletCount = Math.min(walletCount, maxEphemeralWallets);
-        
-        if (walletCount > maxEphemeralWallets) {
-            logger.warn(`[MultiStrategy] ${strategy.name} - Wallet count ${walletCount} exceeds max ${maxEphemeralWallets}, using ${actualWalletCount}`);
+        // Warn if using many wallets without per-cycle funding
+        if (totalWallets > 50 && walletsPerCycle >= totalWallets) {
+            logger.warn(`[MultiStrategy] ${strategy.name} - Using ${totalWallets} wallets without per-cycle funding may cause rate limiting`);
             if (chatId) {
                 bot.sendMessage(chatId, 
-                    `⚠️ Wallet count limited to ${maxEphemeralWallets} for ephemeral mode`,
+                    `⚠️ *Performance Warning*\n\n` +
+                    `Using ${totalWallets} wallets without per-cycle funding.\n\n` +
+                    `💡 Tip: Set "Wallets/Cycle" to 30-50 to avoid rate limiting.`,
                     { parse_mode: 'Markdown' }
                 ).catch(() => {});
             }
         }
         
-        strategyWallets = walletManager.generateEphemeralWallets(actualWalletCount);
+        // Generate all wallets upfront (no hard limit)
+        strategyWallets = walletManager.generateEphemeralWallets(totalWallets);
         
         if (!strategyWallets || strategyWallets.length === 0) {
             logger.error(`[MultiStrategy] Failed to generate ephemeral wallets for strategy ${strategy.id}`);
@@ -3785,50 +3902,11 @@ async function executeMultiStrategyInstance(strategy, chatId) {
             return;
         }
         
-        logger.info(`[MultiStrategy] ${strategy.name} - Generated ${strategyWallets.length} ephemeral wallets`);
-        
-        // Fund ephemeral wallets
-        logger.info(`[MultiStrategy] ${strategy.name} - Funding ${strategyWallets.length} ephemeral wallets...`);
+        logger.info(`[MultiStrategy] ${strategy.name} - Generated ${strategyWallets.length} ephemeral wallets (${walletsPerCycle} per cycle)`);
         
         if (chatId) {
             bot.sendMessage(chatId, 
-                `💰 Funding ${strategyWallets.length} ephemeral wallets...\nThis may take a few moments.`,
-                { parse_mode: 'Markdown' }
-            ).catch(err => logger.warn(`Failed to send funding message: ${err.message}`));
-        }
-        
-        // Limit concurrency for ephemeral wallet funding to avoid rate limits
-        const fundingConcurrency = Math.min(strategy.config.batchConcurrency || 5, 5);
-        
-        const fundResult = await walletManager.fundWallets(strategyWallets, {
-            connection,
-            masterKeypair,
-            sendSOLFn: sendSOL,
-            amountSOL: strategy.config.fundAmountPerWallet || 0.005,
-            concurrency: fundingConcurrency,
-            checkRunning: () => strategy.status === 'RUNNING',
-            useWebFunding: false, // Disable web funding for ephemeral to avoid complexity
-            stealthLevel: 0, // Direct funding for ephemeral wallets
-            hopDepth: 0
-        });
-        
-        if (!fundResult.success) {
-            logger.error(`[MultiStrategy] Failed to fund ephemeral wallets: ${fundResult.message}`);
-            multiStrategyManager.stopStrategy(strategy.id, 'Wallet funding failed');
-            if (chatId) {
-                bot.sendMessage(chatId, 
-                    `❌ *Strategy Failed*\n\n${strategy.name}: Wallet funding failed\n${fundResult.message}`,
-                    { parse_mode: 'Markdown' }
-                ).catch(() => {});
-            }
-            return;
-        }
-        
-        logger.info(`[MultiStrategy] ${strategy.name} - Funded ${fundResult.funded}/${strategyWallets.length} wallets`);
-        
-        if (chatId) {
-            bot.sendMessage(chatId, 
-                `✅ Funded ${fundResult.funded} wallets successfully`,
+                `✅ Generated ${strategyWallets.length} ephemeral wallets\n💡 Will fund ${walletsPerCycle} wallets per cycle`,
                 { parse_mode: 'Markdown' }
             ).catch(() => {});
         }
@@ -3845,9 +3923,50 @@ async function executeMultiStrategyInstance(strategy, chatId) {
             strategy.runtime.currentCycle = cycle + 1;
             logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}/${strategy.config.numberOfCycles}`);
             
+            // For ephemeral mode with per-cycle funding
+            let cycleWallets = strategyWallets;
+            const isEphemeral = !strategy.config.useWalletPool;
+            const walletsPerCycle = strategy.config.walletsPerCycle || strategyWallets.length;
+            
+            if (isEphemeral && walletsPerCycle < strategyWallets.length) {
+                // Per-cycle funding: fund only wallets needed for this cycle
+                const startIdx = (cycle * walletsPerCycle) % strategyWallets.length;
+                const endIdx = Math.min(startIdx + walletsPerCycle, strategyWallets.length);
+                cycleWallets = strategyWallets.slice(startIdx, endIdx);
+                
+                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funding ${cycleWallets.length} wallets...`);
+                
+                if (chatId) {
+                    bot.sendMessage(chatId, 
+                        `💰 Cycle ${cycle + 1}: Funding ${cycleWallets.length} wallets...`,
+                        { parse_mode: 'Markdown' }
+                    ).catch(() => {});
+                }
+                
+                const fundingConcurrency = Math.min(strategy.config.batchConcurrency || 3, 3);
+                const fundResult = await walletManager.fundWallets(cycleWallets, {
+                    connection,
+                    masterKeypair,
+                    sendSOLFn: sendSOL,
+                    amountSOL: strategy.config.fundAmountPerWallet || 0.005,
+                    concurrency: fundingConcurrency,
+                    checkRunning: () => strategy.status === 'RUNNING',
+                    useWebFunding: strategy.config.useWebFunding || false,
+                    stealthLevel: strategy.config.fundingStealthLevel || 0,
+                    hopDepth: strategy.config.fundingStealthLevel || 0
+                });
+                
+                if (!fundResult || !fundResult.success) {
+                    logger.error(`[MultiStrategy] Cycle ${cycle + 1} funding failed, skipping cycle`);
+                    continue;
+                }
+                
+                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.funded} wallets`);
+            }
+            
             // Execute buys with batch engine
             await BatchSwapEngine.executeBatch(
-                strategyWallets.slice(0, strategy.config.walletsPerCycle),
+                cycleWallets,
                 async (wallet) => {
                     if (strategy.status !== 'RUNNING') return null;
                     
@@ -3910,6 +4029,32 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                 () => strategy.status === 'RUNNING'
             );
             
+            // For ephemeral mode with per-cycle funding: drain wallets after cycle
+            if (isEphemeral && walletsPerCycle < strategyWallets.length) {
+                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Draining ${cycleWallets.length} wallets...`);
+                
+                if (chatId) {
+                    bot.sendMessage(chatId, 
+                        `🔄 Cycle ${cycle + 1}: Draining wallets...`,
+                        { parse_mode: 'Markdown' }
+                    ).catch(() => {});
+                }
+                
+                try {
+                    const drainConcurrency = Math.min(strategy.config.batchConcurrency || 3, 3);
+                    await walletManager.drainWallets(cycleWallets, {
+                        connection,
+                        masterKeypair,
+                        sendSOLFn: sendSOL,
+                        concurrency: drainConcurrency,
+                        checkRunning: () => true
+                    });
+                    logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Wallets drained`);
+                } catch (error) {
+                    logger.error(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Failed to drain: ${error.message}`);
+                }
+            }
+            
             // Wait between cycles
             if (cycle < strategy.config.numberOfCycles - 1 && strategy.status === 'RUNNING') {
                 await sleep(strategy.config.intervalBetweenActions);
@@ -3921,8 +4066,12 @@ async function executeMultiStrategyInstance(strategy, chatId) {
             multiStrategyManager.stopStrategy(strategy.id, 'Completed all cycles');
             logger.info(`[MultiStrategy] ${strategy.name} completed successfully`);
             
-            // Drain ephemeral wallets if used
-            if (!strategy.config.useWalletPool && strategyWallets.length > 0) {
+            // Drain ephemeral wallets if used (and not already drained per-cycle)
+            const isEphemeral = !strategy.config.useWalletPool;
+            const walletsPerCycle = strategy.config.walletsPerCycle || strategyWallets.length;
+            const usedPerCycleFunding = isEphemeral && walletsPerCycle < strategyWallets.length;
+            
+            if (isEphemeral && !usedPerCycleFunding && strategyWallets.length > 0) {
                 logger.info(`[MultiStrategy] ${strategy.name} - Draining ${strategyWallets.length} ephemeral wallets...`);
                 
                 if (chatId) {
@@ -4149,6 +4298,45 @@ bot.on('callback_query', async (callbackQuery) => {
             handleMultiStrategyConfigSetting(chatId, strategyId, 'provider');
         } catch (error) {
             logger.error(`[MultiStrategy] DEX update error: ${error.message}, strategyId: ${strategyId}, dex: ${dex}`);
+            bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
+        }
+    }
+    else if (action.startsWith('multi_pattern_')) {
+        // Format: multi_pattern_<strategyId>_<pattern>
+        // Pattern names can have underscores (e.g., ASCENDING_TRIANGLE, CUP_AND_HANDLE)
+        const withoutPrefix = action.replace('multi_pattern_', '');
+        
+        // List of all possible pattern values
+        const patternOptions = [
+            'ASCENDING_TRIANGLE', 'DESCENDING_TRIANGLE', 'BULL_FLAG', 'BEAR_FLAG',
+            'CUP_AND_HANDLE', 'HEAD_AND_SHOULDERS', 'DOUBLE_BOTTOM', 'DOUBLE_TOP',
+            'WEDGE_RISING', 'WEDGE_FALLING'
+        ];
+        
+        let strategyId, pattern;
+        
+        // Find which pattern it ends with
+        for (const patternOption of patternOptions) {
+            if (withoutPrefix.endsWith('_' + patternOption)) {
+                pattern = patternOption;
+                strategyId = withoutPrefix.replace('_' + patternOption, '');
+                break;
+            }
+        }
+        
+        if (!pattern) {
+            // Fallback: last part is pattern
+            const parts = withoutPrefix.split('_');
+            pattern = parts.pop();
+            strategyId = parts.join('_');
+        }
+        
+        try {
+            multiStrategyManager.updateStrategyConfig(strategyId, { chartPattern: pattern });
+            bot.sendMessage(chatId, `✅ Chart pattern set to ${pattern}`);
+            showMultiStrategyConfig(chatId, strategyId);
+        } catch (error) {
+            logger.error(`[MultiStrategy] Pattern update error: ${error.message}, strategyId: ${strategyId}, pattern: ${pattern}`);
             bot.sendMessage(chatId, `❌ Failed to update: ${error.message}`);
         }
     }

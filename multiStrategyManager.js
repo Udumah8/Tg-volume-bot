@@ -173,7 +173,9 @@ export class MultiStrategyManager extends EventEmitter {
             throw new Error('Strategy is already running');
         }
         
-        if (strategy.wallets.assigned.length === 0) {
+        // Only check for assigned wallets if using wallet pool mode
+        // Ephemeral mode generates wallets on-the-fly
+        if (strategy.config.useWalletPool && strategy.wallets.assigned.length === 0) {
             throw new Error('No wallets assigned to this strategy');
         }
         

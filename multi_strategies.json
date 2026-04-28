@@ -4,7 +4,7 @@
     "name": "PUMP_DUMP 6:56:08 PM",
     "type": "PUMP_DUMP",
     "createdAt": 1777139768167,
-    "status": "IDLE",
+    "status": "STOPPED",
     "config": {
       "tokenAddress": "7LpvxqijqTHHAYkyRA8mNarFezHHmQWXFNbGs8GW1ray",
       "minBuyAmount": 0.1,
@@ -17,10 +17,68 @@
       "useJito": false,
       "jitoTipAmount": 0.00001,
       "swapProvider": "SOLANA_TRADE",
-      "targetDex": "RAYDIUM_LAUNCHPAD",
+      "targetDex": "PUMP_FUN",
       "dedicatedWallets": [],
-      "walletCount": 50,
-      "fundAmountPerWallet": 0.002
+      "walletCount": 150,
+      "fundAmountPerWallet": 0.002,
+      "useWalletPool": false
+    },
+    "stats": {
+      "totalBuys": 0,
+      "totalSells": 0,
+      "successfulBuys": 0,
+      "successfulSells": 0,
+      "failedBuys": 0,
+      "failedSells": 0,
+      "totalSOLSpent": 0,
+      "totalSOLReceived": 0,
+      "totalTokensBought": 0,
+      "totalTokensSold": 0,
+      "profitLoss": 0,
+      "roi": 0
+    },
+    "wallets": {
+      "assigned": [
+        "AYGx9rD9u6Fg9huAkkRkVYNcPSvGMPNNYEfaD9541nX2"
+      ],
+      "funded": [],
+      "active": [],
+      "available": [
+        "AYGx9rD9u6Fg9huAkkRkVYNcPSvGMPNNYEfaD9541nX2"
+      ]
+    },
+    "runtime": {
+      "startedAt": 1777286286543,
+      "stoppedAt": 1777286320069,
+      "currentCycle": 0,
+      "lastError": null
+    }
+  },
+  "chart_pattern_1777322904342": {
+    "id": "chart_pattern_1777322904342",
+    "name": "CHART_PATTERN 9:48:24 PM",
+    "type": "CHART_PATTERN",
+    "createdAt": 1777322904342,
+    "status": "RUNNING",
+    "config": {
+      "tokenAddress": "7LpvxqijqTHHAYkyRA8mNarFezHHmQWXFNbGs8GW1ray",
+      "minBuyAmount": 0.01,
+      "maxBuyAmount": 0.05,
+      "priorityFee": 0.0005,
+      "slippage": 2,
+      "numberOfCycles": 50,
+      "intervalBetweenActions": 15000,
+      "jitterPercentage": 20,
+      "useJito": false,
+      "jitoTipAmount": 0.0001,
+      "swapProvider": "SOLANA_TRACKER",
+      "targetDex": "RAYDIUM_AMM",
+      "dedicatedWallets": [],
+      "walletCount": 150,
+      "fundAmountPerWallet": 0.005,
+      "chartPattern": "DESCENDING_TRIANGLE",
+      "useWalletPool": false,
+      "walletsPerCycle": 5
     },
     "stats": {
       "totalBuys": 0,
@@ -43,7 +101,7 @@
       "available": []
     },
     "runtime": {
-      "startedAt": null,
+      "startedAt": 1777323291142,
       "stoppedAt": null,
       "currentCycle": 0,
       "lastError": null
