@@ -474,6 +474,18 @@ function isAdmin(chatId) {
 
 function getRandomFloat(min, max) { return Math.random() * (max - min) + min; }
 
+/**
+ * Get randomized funding amount with variance for natural behavior
+ * @param {number} baseAmount - Base funding amount
+ * @param {number} variance - Variance percentage (default 20%)
+ * @returns {number} Randomized funding amount
+ */
+function getRandomizedFundAmount(baseAmount, variance = 0.2) {
+    const minAmount = baseAmount * (1 - variance);
+    const maxAmount = baseAmount * (1 + variance);
+    return parseFloat(getRandomFloat(minAmount, maxAmount).toFixed(6));
+}
+
 function getJitteredInterval(baseInterval, jitterPercent) {
     if (jitterPercent <= 0) return baseInterval;
     const variation = baseInterval * (jitterPercent / 100);
@@ -857,18 +869,23 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             return { success: false, error: 'Insufficient funds' };
         }
 
-        bot.sendMessage(chatId, `💰 *Funding ${wallets.length} Wallets*\n\nAmount: \`${fundAmount}\` SOL each\nTotal: \`${totalNeeded.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `💰 *Funding ${wallets.length} Wallets*\n\nBase Amount: \`${fundAmount}\` SOL\nVariance: ±25% for natural behavior\nTotal: ~\`${totalNeeded.toFixed(4)}\` SOL`, { parse_mode: 'Markdown' });
 
         let fundResult;
         if (isEphemeral) {
+            // Use randomized funding amount for natural behavior
+            const randomizedFundAmount = getRandomizedFundAmount(fundAmount, 0.25);
+            
             fundResult = await walletManager.fundWallets(wallets, {
-                connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: fundAmount, concurrency: STATE.batchConcurrency,
+                connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: randomizedFundAmount, concurrency: STATE.batchConcurrency,
                 progressCb: (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 checkRunning: () => STATE.running && !isShuttingDown,
                 useWebFunding: STATE.useWebFunding,
                 stealthLevel: STATE.fundingStealthLevel,
                 hopDepth: STATE.makerFundingChainDepth
             });
+            
+            logger.info(`[Strategy] Funded wallets with randomized amount: ${randomizedFundAmount.toFixed(6)} SOL`);
         } else {
             fundResult = await walletManager.fundAll(
                 connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
@@ -996,10 +1013,23 @@ async function executeStandardCycles(chatId, connection) {
         walletCount: STATE.useWalletPool ? Math.min(STATE.walletsPerCycle, walletManager.size) : STATE.walletsPerCycle,
         fundAmount: STATE.fundAmountPerWallet,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
-            const amount = parseFloat((getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult).toFixed(4));
+            // Add random pre-trade delay (0-3 seconds) for natural behavior
+            const randomDelay = Math.floor(Math.random() * 3000);
+            if (randomDelay > 0) await sleep(randomDelay);
+            
+            // Randomize amount with volume multiplier and additional jitter
+            const baseAmount = getRandomFloat(STATE.minBuyAmount, STATE.maxBuyAmount) * volMult;
+            const jitter = STATE.jitterPercentage || 20;
+            const jitterMultiplier = 1 + (getRandomFloat(-jitter, jitter) / 100);
+            const amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+            
             return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, amount, cid, true);
         },
         sellLogic: async (wallet, idx, volMult, conn, cid) => {
+            // Add random pre-sell delay (0-2 seconds)
+            const randomDelay = Math.floor(Math.random() * 2000);
+            if (randomDelay > 0) await sleep(randomDelay);
+            
             const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
             if (bal > 0.0001) return await swap(STATE.tokenAddress, SOL_ADDR, wallet, conn, 'auto', cid, true);
             return null;
@@ -3989,11 +4019,16 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                 }
                 
                 const fundingConcurrency = Math.min(strategy.config.batchConcurrency || 3, 3);
+                
+                // Use randomized funding amount for natural behavior (±25% variance)
+                const baseFundAmount = strategy.config.fundAmountPerWallet || 0.005;
+                const randomizedFundAmount = getRandomizedFundAmount(baseFundAmount, 0.25);
+                
                 const fundResult = await walletManager.fundWallets(cycleWallets, {
                     connection,
                     masterKeypair,
                     sendSOLFn: sendSOL,
-                    amountSOL: strategy.config.fundAmountPerWallet || 0.005,
+                    amountSOL: randomizedFundAmount,
                     concurrency: fundingConcurrency,
                     checkRunning: () => strategy.status === 'RUNNING',
                     useWebFunding: strategy.config.useWebFunding || false,
@@ -4006,6 +4041,8 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                     continue;
                 }
                 
+                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.funded} wallets with ${randomizedFundAmount.toFixed(6)} SOL each`);
+                
                 logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.funded} wallets`);
             }
             
@@ -4015,10 +4052,20 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                 async (wallet) => {
                     if (strategy.status !== 'RUNNING') return null;
                     
-                    const amount = getRandomFloat(
+                    // Randomize buy amount with jitter for natural behavior
+                    const baseAmount = getRandomFloat(
                         strategy.config.minBuyAmount,
                         strategy.config.maxBuyAmount
                     );
+                    const jitter = strategy.config.jitterPercentage || 20;
+                    const jitterMultiplier = 1 + (getRandomFloat(-jitter, jitter) / 100);
+                    const amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+                    
+                    // Add random delay for more organic behavior (0-2 seconds)
+                    const randomDelay = Math.floor(Math.random() * 2000);
+                    if (randomDelay > 0) {
+                        await sleep(randomDelay);
+                    }
                     
                     try {
                         const balanceBefore = await getTokenBalance(
