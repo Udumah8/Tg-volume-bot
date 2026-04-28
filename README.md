@@ -1,21 +1,29 @@
 # Solana Volume & Trading Bot v3.2 🤖🚀
 
-**Enterprise-Grade Solana Trading Automation with Multi-Strategy Management**
+**Enterprise-Grade Solana Trading Automation with Natural Behavior & Anti-Detection**
 
-A production-ready, institutional-quality Solana trading and volume generation bot with complete Telegram control interface. Features 19 battle-tested trading strategies, advanced multi-strategy manager, wallet aging system, Jito MEV protection, 10,000+ wallet management, multi-DEX support (15+ protocols), and failover resilience.
+A production-ready, institutional-quality Solana trading and volume generation bot with complete Telegram control interface. Features 19 battle-tested trading strategies, advanced multi-strategy manager, intelligent randomization for natural behavior, wallet aging system, Jito MEV protection, 10,000+ wallet management, multi-DEX support (15+ protocols), and failover resilience.
 
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x-green.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Solana](https://img.shields.io/badge/Solana-Mainnet-purple.svg)](https://solana.com/)
 [![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-success.svg)]()
 
-> **⚡ Live Telegram Control • 🎯 Multi-Strategy Manager • 🔐 Enterprise Security • 📊 Real-time Monitoring**
+> **⚡ Live Telegram Control • 🎯 Multi-Strategy Manager • 🤖 Natural Behavior AI • 🔐 Enterprise Security • 📊 Real-time Monitoring**
 
 ---
 
 ## 🎯 What's New in v3.2
 
-### Multi-Strategy Manager 🎯
+### 🤖 Natural Behavior & Anti-Detection System
+- **Randomized funding amounts** (±25% variance per wallet)
+- **Enhanced trade randomization** (double-layer jitter system)
+- **Random pre-trade delays** (0-3 seconds for organic timing)
+- **Works on BOTH modes** (ephemeral and wallet pool)
+- **Undetectable patterns** - simulates human trading behavior
+- **Minimal capital mode** - run with just 0.012 SOL total
+
+### 🎯 Multi-Strategy Manager
 - **Run multiple strategies simultaneously** with isolated wallet pools
 - **Per-cycle wallet funding** for ephemeral mode (eliminates rate limiting)
 - **Chart pattern selection UI** for both single and multi-strategy
@@ -23,12 +31,13 @@ A production-ready, institutional-quality Solana trading and volume generation b
 - **Real-time monitoring** of all running strategies
 - **Independent configuration** per strategy
 
-### Enhanced Features
+### ⚡ Enhanced Features
 - **Smart wallet allocation** between strategies
 - **Ephemeral mode improvements** with automatic per-cycle funding/draining
 - **Better error handling** for Telegram connection timeouts
 - **Improved pause/resume** with proper state management
 - **No hard wallet limits** - respects user configuration
+- **Configurable jitter** via Telegram UI
 
 ---
 
@@ -78,12 +87,22 @@ npm start
 
 ## 🌟 Key Features
 
+### 🤖 Natural Behavior & Anti-Detection
+- **Randomized Funding**: ±25% variance per wallet (no fixed amounts)
+- **Enhanced Trade Randomization**: Double-layer jitter system
+- **Random Timing**: 0-3 second delays simulate human "thinking time"
+- **Organic Patterns**: Breaks bot detection signatures
+- **Works Everywhere**: Both ephemeral and wallet pool modes
+- **Minimal Capital**: Run with just 0.012 SOL total
+- **Configurable**: Adjust jitter percentage via Telegram UI
+
 ### 🎯 Multi-Strategy Manager
 - Run up to 10+ strategies simultaneously
 - Each strategy has isolated wallet pool or ephemeral wallets
 - Independent configuration per strategy
 - Real-time monitoring and control
 - Pause/Resume/Stop individual strategies
+- Per-cycle funding for minimal capital requirements
 
 ### 💼 Dual Wallet Modes
 
@@ -91,13 +110,15 @@ npm start
 - Persistent wallets saved to disk
 - Reusable across operations
 - Supports wallet aging system
+- Randomized funding for natural behavior
 - Best for long-term campaigns
 
 **Ephemeral Mode** (`useWalletPool: false`):
 - Temporary in-memory wallets
 - Auto-generated and auto-cleaned
-- Per-cycle funding/draining (NEW!)
-- 5x less capital required
+- Per-cycle funding/draining
+- Randomized amounts per cycle
+- 5x less capital required (0.012 SOL minimum)
 - Best for one-time operations
 
 ### 🎨 19 Trading Strategies
@@ -135,6 +156,7 @@ npm start
 - Rate limiting
 - Session management
 - Secure error handling
+- Anti-detection randomization
 
 ### 📊 Real-Time Monitoring
 - Live progress updates
@@ -142,6 +164,7 @@ npm start
 - Transaction confirmations
 - Error reporting with solutions
 - Performance metrics
+- Randomization logging
 
 ---
 
@@ -335,6 +358,7 @@ Configure via Telegram: `Main Menu → ⚙️ Settings → Basic Settings`
 | Number of Cycles | Trading cycles to execute | 3 | 1-1000 |
 | Interval | Delay between actions (ms) | 15000 | 100-60000 |
 | Wallets Per Cycle | Wallets to use per cycle | 50 | 1-10000 |
+| Jitter Percentage | Trade amount randomization | 20 | 0-100 |
 
 ### Advanced Settings
 
@@ -345,8 +369,9 @@ Configure via Telegram: `Main Menu → ⚙️ Settings → Advanced`
 | Batch Concurrency | Parallel operations | 10 |
 | Priority Fee | SOL fee per transaction | 0.0005 |
 | Slippage | Slippage tolerance (%) | 2 |
-| Jitter Percentage | Timing randomization | 20 |
+| Jitter Percentage | Trade amount randomization | 20 |
 | Use Jito | Enable MEV protection | false |
+| Funding Variance | Randomized funding (±%) | 25 (hardcoded) |
 | Swap Provider | SOLANA_TRACKER or SOLANA_TRADE | SOLANA_TRACKER |
 | Target DEX | Which DEX to use | RAYDIUM_AMM |
 
@@ -546,11 +571,18 @@ The bot provides live progress updates:
    - Adjust concurrency based on RPC performance
    - Fine-tune delays for organic appearance
    - Use per-cycle funding for large wallet counts
+   - Increase jitter percentage for more variance (20-40%)
 
 3. **Use Multiple RPC Endpoints**:
    ```env
    RPC_URLS=https://api.mainnet-beta.solana.com,https://rpc.ankr.com/solana,https://solana-api.projectserum.com
    ```
+
+4. **Leverage Randomization**:
+   - Default ±25% funding variance is automatic
+   - Adjust jitter percentage in Settings → Advanced
+   - Random delays are automatic (0-3 seconds)
+   - No two executions will look the same
 
 ### Multi-Strategy Tips
 
@@ -559,6 +591,8 @@ The bot provides live progress updates:
 3. **Monitor RPC rate limits** when running multiple strategies
 4. **Use per-cycle funding** for ephemeral mode with >50 wallets
 5. **Stagger start times** to avoid overwhelming RPC
+6. **Leverage randomization** - each strategy will have unique patterns
+7. **Adjust jitter per strategy** for different behavior profiles
 
 ### Security
 
@@ -621,6 +655,14 @@ The bot provides live progress updates:
 2. Check strategy status in details view
 3. Use Stop if immediate halt needed
 
+**Issue: Trades look too similar/bot-like**
+
+**Solutions**:
+1. Already fixed! Randomization is automatic
+2. Increase jitter percentage (Settings → Advanced)
+3. Use longer intervals between actions
+4. Verify logs show "randomized amount" messages
+
 ### Getting Help
 
 1. Check error messages in Telegram
@@ -638,27 +680,39 @@ The bot provides live progress updates:
 {
   "batchConcurrency": 30,
   "intervalBetweenActions": 1000,
+  "jitterPercentage": 10,
   "useJito": true
 }
 ```
+**Note**: Lower jitter = faster but more detectable
 
 ### For Reliability
 ```json
 {
   "batchConcurrency": 10,
   "intervalBetweenActions": 5000,
+  "jitterPercentage": 20,
   "useJito": false
 }
 ```
+**Note**: Balanced approach with good randomization
 
-### For Stealth
+### For Maximum Stealth
 ```json
 {
   "batchConcurrency": 5,
   "intervalBetweenActions": 10000,
-  "jitterPercentage": 30
+  "jitterPercentage": 40,
+  "useJito": false
 }
 ```
+**Note**: Higher jitter + longer delays = most organic appearance
+
+### Natural Behavior Features (Automatic)
+- ✅ Funding variance: ±25% (hardcoded, always active)
+- ✅ Random delays: 0-3 seconds (hardcoded, always active)
+- ✅ Trade jitter: Configurable via jitterPercentage
+- ✅ Works on both ephemeral and wallet pool modes
 
 ---
 
