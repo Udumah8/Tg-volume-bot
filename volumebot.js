@@ -887,14 +887,19 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
             
             logger.info(`[Strategy] Funded wallets with randomized amount: ${randomizedFundAmount.toFixed(6)} SOL`);
         } else {
+            // Wallet Pool Mode: Also use randomized funding for natural behavior
+            const randomizedFundAmount = getRandomizedFundAmount(fundAmount, 0.25);
+            
             fundResult = await walletManager.fundAll(
-                connection, masterKeypair, sendSOL, fundAmount, STATE.batchConcurrency,
+                connection, masterKeypair, sendSOL, randomizedFundAmount, STATE.batchConcurrency,
                 (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 () => STATE.running && !isShuttingDown,
                 STATE.useWebFunding,
                 STATE.fundingStealthLevel,
                 STATE.makerFundingChainDepth
             );
+            
+            logger.info(`[Strategy] Funded pool wallets with randomized amount: ${randomizedFundAmount.toFixed(6)} SOL`);
         }
 
         if (fundResult.failures > 0) {
