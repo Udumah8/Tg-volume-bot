@@ -2326,16 +2326,36 @@ function showConfigPumpDump(chatId) {
 }
 
 function showConfigChart(chatId) {
+    const currentPattern = STATE.chartPattern || 'ASCENDING_TRIANGLE';
+    const patterns = [
+        ['ASCENDING_TRIANGLE', '📈 Ascending Triangle'],
+        ['DESCENDING_TRIANGLE', '📉 Descending Triangle'],
+        ['BULL_FLAG', '🚩 Bull Flag'],
+        ['BEAR_FLAG', '🏴 Bear Flag'],
+        ['CUP_AND_HANDLE', '☕ Cup & Handle'],
+        ['HEAD_AND_SHOULDERS', '👤 Head & Shoulders'],
+        ['DOUBLE_BOTTOM', '⏬ Double Bottom'],
+        ['DOUBLE_TOP', '⏫ Double Top'],
+        ['WEDGE_RISING', '📐 Rising Wedge'],
+        ['WEDGE_FALLING', '📐 Falling Wedge']
+    ];
+    
+    const patternKeyboard = [];
+    for (const [val, label] of patterns) {
+        patternKeyboard.push([{ 
+            text: (currentPattern === val ? '✅ ' : '') + label, 
+            callback_data: `config_chr_pattern_${val}` 
+        }]);
+    }
+    patternKeyboard.push([{ text: '🔁 Cycles', callback_data: 'config_chr_cycles' }]);
+    patternKeyboard.push([{ text: '« Back', callback_data: 'settings_strat' }]);
+    
     bot.sendMessage(chatId,
         `⚙️ *CHART PATTERN CONFIG*\n━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `📐 Pattern: \`${STATE.chartPattern}\`\n` +
+        `📐 Pattern: \`${currentPattern}\`\n` +
         `🔁 Cycles: \`${STATE.numberOfCycles}\`\n` +
         `💰 Buy: \`${STATE.minBuyAmount}-${STATE.maxBuyAmount}\` SOL`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-            [{ text: '📐 Chart Pattern', callback_data: 'config_chr_pattern' }],
-            [{ text: '🔁 Cycles', callback_data: 'config_chr_cycles' }],
-            [{ text: '« Back', callback_data: 'settings_strat' }]
-        ]}}
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: patternKeyboard }}
     );
 }
 
@@ -3915,13 +3935,38 @@ async function executeMultiStrategyInstance(strategy, chatId) {
     try {
         // Run strategy cycles
         for (let cycle = 0; cycle < strategy.config.numberOfCycles; cycle++) {
-            if (strategy.status !== 'RUNNING') {
+            // Check for stop or pause
+            if (strategy.status === 'STOPPED') {
                 logger.info(`[MultiStrategy] Strategy ${strategy.id} stopped, breaking cycle loop`);
                 break;
             }
             
+            // Handle pause - wait until resumed or stopped
+            while (strategy.status === 'PAUSED') {
+                logger.info(`[MultiStrategy] Strategy ${strategy.id} paused, waiting...`);
+                await sleep(2000); // Check every 2 seconds
+                
+                if (strategy.status === 'STOPPED') {
+                    logger.info(`[MultiStrategy] Strategy ${strategy.id} stopped while paused`);
+                    break;
+                }
+            }
+            
+            if (strategy.status !== 'RUNNING') {
+                logger.info(`[MultiStrategy] Strategy ${strategy.id} not running, breaking cycle loop`);
+                break;
+            }
+            
             strategy.runtime.currentCycle = cycle + 1;
+            multiStrategyManager.saveStrategies(); // Save progress
             logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}/${strategy.config.numberOfCycles}`);
+            
+            if (chatId) {
+                bot.sendMessage(chatId, 
+                    `🔄 *Cycle ${cycle + 1}/${strategy.config.numberOfCycles}*\n\n${strategy.name}`,
+                    { parse_mode: 'Markdown' }
+                ).catch(() => {});
+            }
             
             // For ephemeral mode with per-cycle funding
             let cycleWallets = strategyWallets;
@@ -4557,9 +4602,27 @@ bot.on('callback_query', async (callbackQuery) => {
 
     // Chart, Holder, Whale configs
     else if (action === 'config_chr_pattern') {
-        promptSetting(chatId, '📐 Enter chart pattern type:', (val) => {
-            if (val.length > 0) { STATE.chartPattern = val; saveConfig(); bot.sendMessage(chatId, `✅ Pattern set`); showConfigChart(chatId); }
-            else bot.sendMessage(chatId, '❌ Invalid');
+        // Show chart pattern selection menu (already handled by showConfigChart)
+        showConfigChart(chatId);
+    }
+    else if (action.startsWith('config_chr_pattern_')) {
+        const pattern = action.replace('config_chr_pattern_', '');
+        STATE.chartPattern = pattern;
+        saveConfig();
+        bot.sendMessage(chatId, `✅ Chart pattern set to ${pattern}`);
+        showConfigChart(chatId);
+    }
+    else if (action === 'config_chr_cycles') {
+        promptSetting(chatId, '🔁 Enter cycles (1-1000):', (val) => {
+            const num = parseInt(val);
+            if (isNaN(num) || num < 1 || num > 1000) {
+                bot.sendMessage(chatId, '❌ Invalid cycles. Must be 1-1000.');
+            } else {
+                STATE.numberOfCycles = num;
+                saveConfig();
+                bot.sendMessage(chatId, `✅ Cycles set to ${num}`);
+                showConfigChart(chatId);
+            }
         });
     }
     else if (action === 'config_chr_cycles') {
