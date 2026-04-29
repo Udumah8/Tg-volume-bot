@@ -4125,8 +4125,9 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                     // Calculate buy amount based on strategy type
                     let amount;
                     
-                    // Apply chart pattern logic if this is a CHART_PATTERN strategy
+                    // Apply strategy-specific buy logic
                     if (strategy.type === 'CHART_PATTERN') {
+                        // Chart Pattern: Dynamic buy based on pattern
                         const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
                         const pattern = strategy.config.chartPattern || 'ASCENDING_TRIANGLE';
                         let buyMult = 1.0;
@@ -4193,8 +4194,107 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                         const jitter = strategy.config.jitterPercentage || 20;
                         const jitterMultiplier = 0.85 + Math.random() * 0.3;
                         amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+                    } else if (strategy.type === 'PUMP_DUMP') {
+                        // Pump & Dump: Large buys early, smaller later
+                        const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                        const pumpPhase = progress < 0.6; // First 60% is pump
+                        amount = pumpPhase 
+                            ? getRandomFloat(strategy.config.maxBuyAmount * 0.8, strategy.config.maxBuyAmount)
+                            : getRandomFloat(strategy.config.minBuyAmount, strategy.config.minBuyAmount * 1.5);
+                    } else if (strategy.type === 'WHALE') {
+                        // Whale: Very large coordinated buys
+                        amount = getRandomFloat(
+                            strategy.config.whaleBuyAmount || strategy.config.maxBuyAmount,
+                            (strategy.config.whaleBuyAmount || strategy.config.maxBuyAmount) * 1.2
+                        );
+                    } else if (strategy.type === 'SPAM') {
+                        // Spam: Micro transactions
+                        amount = getRandomFloat(
+                            strategy.config.spamMicroBuyAmount || 0.0001,
+                            (strategy.config.spamMicroBuyAmount || 0.0001) * 2
+                        );
+                    } else if (strategy.type === 'HOLDER_GROWTH') {
+                        // Holder Growth: Small consistent buys, no sells
+                        amount = strategy.config.holderBuyAmount || strategy.config.minBuyAmount;
+                    } else if (strategy.type === 'VOLUME_BOOST') {
+                        // Volume Boost: Multiplied volume
+                        const multiplier = strategy.config.volumeBoostMultiplier || 3;
+                        amount = getRandomFloat(
+                            strategy.config.volumeBoostMinAmount || strategy.config.minBuyAmount,
+                            strategy.config.volumeBoostMaxAmount || strategy.config.maxBuyAmount
+                        ) * multiplier;
+                    } else if (strategy.type === 'MAKER') {
+                        // Maker: Personality-driven buys
+                        const personalities = ['RETAIL', 'SCALPER', 'DIAMOND'];
+                        const personality = personalities[Math.floor(Math.random() * personalities.length)];
+                        const baseAmount = getRandomFloat(strategy.config.minBuyAmount, strategy.config.maxBuyAmount);
+                        amount = personality === 'RETAIL' ? baseAmount * 0.7 : 
+                                 personality === 'SCALPER' ? baseAmount * 1.2 : baseAmount;
+                    } else if (strategy.type === 'TRENDING') {
+                        // Trending: Intensity-based buys
+                        const intensity = strategy.config.trendingIntensity || 5;
+                        const multiplier = 1 + (intensity / 10);
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * multiplier,
+                            strategy.config.maxBuyAmount * multiplier
+                        );
+                    } else if (strategy.type === 'WEB_OF_ACTIVITY') {
+                        // Web of Activity: Varied amounts for organic feel
+                        const variance = 0.5;
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * (1 - variance),
+                            strategy.config.maxBuyAmount * (1 + variance)
+                        );
+                    } else if (strategy.type === 'JITO_MEV_WASH') {
+                        // Jito MEV Wash: Quick buys for wash trading
+                        amount = getRandomFloat(strategy.config.minBuyAmount, strategy.config.maxBuyAmount);
+                    } else if (strategy.type === 'KOL_ALPHA_CALL') {
+                        // KOL Alpha: Retail FOMO buys (small amounts)
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * 0.1,
+                            strategy.config.minBuyAmount * 0.8
+                        );
+                    } else if (strategy.type === 'BULL_TRAP') {
+                        // Bull Trap: Large buys to create trap
+                        const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                        amount = progress < 0.5 
+                            ? getRandomFloat(strategy.config.maxBuyAmount * 0.8, strategy.config.maxBuyAmount * 1.5)
+                            : getRandomFloat(strategy.config.minBuyAmount, strategy.config.minBuyAmount * 1.2);
+                    } else if (strategy.type === 'SOCIAL_PROOF_AIRDROP') {
+                        // Airdrop: Small buys to create holder count
+                        amount = strategy.config.minBuyAmount * 0.5;
+                    } else if (strategy.type === 'LADDER') {
+                        // Ladder: Progressively larger buys
+                        const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                        const multiplier = strategy.config.ladderBuyMultiplier || 1.8;
+                        amount = strategy.config.minBuyAmount * (1 + progress * multiplier);
+                    } else if (strategy.type === 'SNIPER') {
+                        // Sniper: Fast entry with varied amounts
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * 0.8,
+                            strategy.config.maxBuyAmount * 1.2
+                        );
+                    } else if (strategy.type === 'ADV_WASH') {
+                        // Advanced Wash: Circular trading amounts
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * 0.5,
+                            strategy.config.maxBuyAmount * 0.7
+                        );
+                    } else if (strategy.type === 'MIRROR_WHALE') {
+                        // Mirror Whale: Copy whale-sized buys
+                        amount = getRandomFloat(
+                            strategy.config.mirrorBuyThresholdSOL || strategy.config.maxBuyAmount,
+                            (strategy.config.mirrorBuyThresholdSOL || strategy.config.maxBuyAmount) * 1.5
+                        );
+                    } else if (strategy.type === 'CURVE_PUMP') {
+                        // Curve Pump: Aggressive buys to push bonding curve
+                        const intensity = strategy.config.curveBuyIntensity || 2.5;
+                        amount = getRandomFloat(
+                            strategy.config.minBuyAmount * intensity,
+                            strategy.config.maxBuyAmount * intensity
+                        );
                     } else {
-                        // Standard randomized buy amount for other strategies
+                        // Standard/Default: Randomized buy amount
                         const baseAmount = getRandomFloat(
                             strategy.config.minBuyAmount,
                             strategy.config.maxBuyAmount
@@ -4291,8 +4391,9 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                         
                         let sellAmount = tokenBalance;
                         
-                        // Apply chart pattern sell logic if this is a CHART_PATTERN strategy
+                        // Apply strategy-specific sell logic
                         if (strategy.type === 'CHART_PATTERN') {
+                            // Chart Pattern: Dynamic sell based on pattern
                             const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
                             const pattern = strategy.config.chartPattern || 'ASCENDING_TRIANGLE';
                             let sellFrac = 0.85; // Default: sell most tokens
@@ -4345,6 +4446,74 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                             }
                             
                             sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'PUMP_DUMP') {
+                            // Pump & Dump: Aggressive sells after pump
+                            const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                            const dumpPhase = progress >= 0.6; // Last 40% is dump
+                            const sellFrac = dumpPhase ? (strategy.config.whaleSellPercent || 80) / 100 : 0.3;
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'WHALE') {
+                            // Whale: Large coordinated dumps
+                            const sellFrac = (strategy.config.whaleSellPercent || 80) / 100;
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'SPAM') {
+                            // Spam: Quick flips, sell most
+                            sellAmount = parseFloat((tokenBalance * 0.9).toFixed(6));
+                        } else if (strategy.type === 'HOLDER_GROWTH') {
+                            // Holder Growth: NO SELLING - skip this wallet
+                            return null;
+                        } else if (strategy.type === 'VOLUME_BOOST') {
+                            // Volume Boost: Sell all to maximize volume
+                            sellAmount = tokenBalance;
+                        } else if (strategy.type === 'MAKER') {
+                            // Maker: Personality-driven sells
+                            const personalities = ['RETAIL', 'SCALPER', 'DIAMOND'];
+                            const personality = personalities[Math.floor(Math.random() * personalities.length)];
+                            const sellFrac = personality === 'RETAIL' ? 0.8 : 
+                                           personality === 'SCALPER' ? 0.95 : 0.5;
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'TRENDING') {
+                            // Trending: Hold more during trending
+                            sellAmount = parseFloat((tokenBalance * 0.6).toFixed(6));
+                        } else if (strategy.type === 'WEB_OF_ACTIVITY') {
+                            // Web of Activity: Varied sells for organic feel
+                            const sellFrac = getRandomFloat(0.6, 0.9);
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'JITO_MEV_WASH') {
+                            // Jito MEV Wash: Quick sells for wash trading
+                            sellAmount = tokenBalance; // Sell all
+                        } else if (strategy.type === 'KOL_ALPHA_CALL') {
+                            // KOL Alpha: Retail holds or quick flips
+                            const sellFrac = Math.random() < 0.5 ? 0.3 : 0.9;
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'BULL_TRAP') {
+                            // Bull Trap: Aggressive dump after trap
+                            const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                            const sellFrac = progress >= 0.5 ? 0.95 : 0.2;
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'SOCIAL_PROOF_AIRDROP') {
+                            // Airdrop: Hold to maintain holder count
+                            return null; // Don't sell
+                        } else if (strategy.type === 'LADDER') {
+                            // Ladder: Sell less as we climb
+                            const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                            const sellFrac = 0.9 - (progress * 0.4);
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        } else if (strategy.type === 'SNIPER') {
+                            // Sniper: Quick exits
+                            sellAmount = parseFloat((tokenBalance * 0.95).toFixed(6));
+                        } else if (strategy.type === 'ADV_WASH') {
+                            // Advanced Wash: Sell all for circular trading
+                            sellAmount = tokenBalance;
+                        } else if (strategy.type === 'MIRROR_WHALE') {
+                            // Mirror Whale: Hold like whales
+                            sellAmount = parseFloat((tokenBalance * 0.3).toFixed(6));
+                        } else if (strategy.type === 'CURVE_PUMP') {
+                            // Curve Pump: Minimal sells to maintain pressure
+                            sellAmount = parseFloat((tokenBalance * 0.2).toFixed(6));
+                        } else {
+                            // Standard/Default: Sell most tokens (85%)
+                            sellAmount = parseFloat((tokenBalance * 0.85).toFixed(6));
                         }
                         
                         // Ensure we have something to sell
