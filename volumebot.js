@@ -1202,28 +1202,93 @@ async function executeChartPattern(chatId, connection) {
     return executeStrategyTemplate(chatId, connection, {
         name: `Chart Pattern: ${STATE.chartPattern}`, walletCount, fundAmount: STATE.fundAmountPerWallet,
         buyLogic: async (wallet, idx, volMult, conn, cid) => {
-            const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); let buyMult;
+            const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); 
+            let buyMult = 1.0;
+            
             switch (STATE.chartPattern) {
-                case 'ASCENDING': buyMult = 0.5 + progress; break;
-                case 'DESCENDING': buyMult = 1.5 - progress; break;
-                case 'SIDEWAYS': buyMult = 0.9 + Math.sin(progress * Math.PI * 4) * 0.2; break;
+                case 'ASCENDING_TRIANGLE':
+                case 'ASCENDING':
+                    buyMult = 0.5 + progress; break;
+                case 'DESCENDING_TRIANGLE':
+                case 'DESCENDING':
+                    buyMult = 1.5 - progress; break;
+                case 'BULL_FLAG':
+                    buyMult = progress < 0.3 ? 1.5 : 0.6; break;
+                case 'BEAR_FLAG':
+                    buyMult = progress < 0.3 ? 0.5 : 1.2; break;
+                case 'CUP_AND_HANDLE':
                 case 'CUP_HANDLE':
                     const cup = Math.sin(progress * Math.PI),
                         handle = progress > 0.8 ? 0.3 * Math.sin((progress - 0.8) * Math.PI / 0.2) : 0;
                     buyMult = 0.4 + cup * 0.8 - handle * 0.3;
                     break;
-                case 'BREAKOUT': default: buyMult = progress < 0.7 ? 0.6 : 1.8;
+                case 'HEAD_AND_SHOULDERS':
+                    if (progress < 0.25) buyMult = 0.6 + progress * 1.6;
+                    else if (progress < 0.5) buyMult = 1.0 + (progress - 0.25) * 2.0;
+                    else if (progress < 0.75) buyMult = 1.5 - (progress - 0.5) * 2.0;
+                    else buyMult = 0.5 - (progress - 0.75) * 0.8;
+                    break;
+                case 'DOUBLE_BOTTOM':
+                    if (progress < 0.3) buyMult = 1.0 - progress * 1.5;
+                    else if (progress < 0.5) buyMult = 0.55 + (progress - 0.3) * 1.5;
+                    else if (progress < 0.7) buyMult = 0.85 - (progress - 0.5) * 1.5;
+                    else buyMult = 0.55 + (progress - 0.7) * 2.0;
+                    break;
+                case 'DOUBLE_TOP':
+                    if (progress < 0.3) buyMult = 0.6 + progress * 1.5;
+                    else if (progress < 0.5) buyMult = 1.05 - (progress - 0.3) * 1.5;
+                    else if (progress < 0.7) buyMult = 0.75 + (progress - 0.5) * 1.5;
+                    else buyMult = 1.05 - (progress - 0.7) * 1.5;
+                    break;
+                case 'WEDGE_RISING':
+                    buyMult = 0.8 + progress * 0.6 - Math.pow(progress, 2) * 0.4; break;
+                case 'WEDGE_FALLING':
+                    buyMult = 1.2 - progress * 0.6 + Math.pow(progress, 2) * 0.4; break;
+                case 'SIDEWAYS':
+                    buyMult = 0.9 + Math.sin(progress * Math.PI * 4) * 0.2; break;
+                case 'BREAKOUT': 
+                default: 
+                    buyMult = progress < 0.7 ? 0.6 : 1.8;
             }
             const jitteredBuy = parseFloat((STATE.minBuyAmount + (STATE.maxBuyAmount - STATE.minBuyAmount) * buyMult * 0.7 * (0.85 + Math.random() * 0.3)).toFixed(4));
             return await swap(SOL_ADDR, STATE.tokenAddress, wallet, conn, jitteredBuy, cid, true);
         },
         sellLogic: async (wallet, idx, volMult, conn, cid) => {
-            const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); let sellFrac;
+            const n = STATE.numberOfCycles, progress = idx / Math.max(n - 1, 1); 
+            let sellFrac = 0.85;
+            
             switch (STATE.chartPattern) {
-                case 'ASCENDING': sellFrac = 0.3 + (1 - progress) * 0.4; break;
-                case 'DESCENDING': sellFrac = 0.3 + progress * 0.6; break;
-                case 'SIDEWAYS': case 'CUP_HANDLE': sellFrac = 0.85; break;
-                case 'BREAKOUT': default: sellFrac = progress < 0.7 ? 0.9 : 0.2;
+                case 'ASCENDING_TRIANGLE':
+                case 'ASCENDING':
+                    sellFrac = 0.3 + (1 - progress) * 0.4; break;
+                case 'DESCENDING_TRIANGLE':
+                case 'DESCENDING':
+                    sellFrac = 0.3 + progress * 0.6; break;
+                case 'BULL_FLAG':
+                    sellFrac = progress < 0.3 ? 0.4 : 0.85; break;
+                case 'BEAR_FLAG':
+                    sellFrac = progress < 0.3 ? 0.9 : 0.5; break;
+                case 'CUP_AND_HANDLE':
+                case 'CUP_HANDLE':
+                    sellFrac = progress > 0.8 ? 0.3 : 0.85; break;
+                case 'HEAD_AND_SHOULDERS':
+                    if (progress < 0.5) sellFrac = 0.4;
+                    else if (progress < 0.75) sellFrac = 0.6;
+                    else sellFrac = 0.9;
+                    break;
+                case 'DOUBLE_BOTTOM':
+                    sellFrac = progress < 0.7 ? 0.85 : 0.3; break;
+                case 'DOUBLE_TOP':
+                    sellFrac = progress < 0.7 ? 0.4 : 0.9; break;
+                case 'WEDGE_RISING':
+                    sellFrac = 0.5 + progress * 0.3; break;
+                case 'WEDGE_FALLING':
+                    sellFrac = 0.8 - progress * 0.3; break;
+                case 'SIDEWAYS':
+                    sellFrac = 0.85; break;
+                case 'BREAKOUT': 
+                default: 
+                    sellFrac = progress < 0.7 ? 0.9 : 0.2;
             }
             const bal = await getTokenBalance(conn, wallet.publicKey, STATE.tokenAddress);
             if (bal > 0) {
@@ -4057,14 +4122,87 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                 async (wallet) => {
                     if (strategy.status !== 'RUNNING') return null;
                     
-                    // Randomize buy amount with jitter for natural behavior
-                    const baseAmount = getRandomFloat(
-                        strategy.config.minBuyAmount,
-                        strategy.config.maxBuyAmount
-                    );
-                    const jitter = strategy.config.jitterPercentage || 20;
-                    const jitterMultiplier = 1 + (getRandomFloat(-jitter, jitter) / 100);
-                    const amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+                    // Calculate buy amount based on strategy type
+                    let amount;
+                    
+                    // Apply chart pattern logic if this is a CHART_PATTERN strategy
+                    if (strategy.type === 'CHART_PATTERN') {
+                        const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                        const pattern = strategy.config.chartPattern || 'ASCENDING_TRIANGLE';
+                        let buyMult = 1.0;
+                        
+                        switch (pattern) {
+                            case 'ASCENDING_TRIANGLE':
+                            case 'ASCENDING':
+                                buyMult = 0.5 + progress; // Gradually increase
+                                break;
+                            case 'DESCENDING_TRIANGLE':
+                            case 'DESCENDING':
+                                buyMult = 1.5 - progress; // Gradually decrease
+                                break;
+                            case 'BULL_FLAG':
+                                buyMult = progress < 0.3 ? 1.5 : 0.6; // Strong start, then consolidate
+                                break;
+                            case 'BEAR_FLAG':
+                                buyMult = progress < 0.3 ? 0.5 : 1.2; // Weak start, then recover
+                                break;
+                            case 'CUP_AND_HANDLE':
+                            case 'CUP_HANDLE':
+                                const cup = Math.sin(progress * Math.PI);
+                                const handle = progress > 0.8 ? 0.3 * Math.sin((progress - 0.8) * Math.PI / 0.2) : 0;
+                                buyMult = 0.4 + cup * 0.8 - handle * 0.3;
+                                break;
+                            case 'HEAD_AND_SHOULDERS':
+                                if (progress < 0.25) buyMult = 0.6 + progress * 1.6; // Left shoulder
+                                else if (progress < 0.5) buyMult = 1.0 + (progress - 0.25) * 2.0; // Head
+                                else if (progress < 0.75) buyMult = 1.5 - (progress - 0.5) * 2.0; // Right shoulder
+                                else buyMult = 0.5 - (progress - 0.75) * 0.8; // Breakdown
+                                break;
+                            case 'DOUBLE_BOTTOM':
+                                if (progress < 0.3) buyMult = 1.0 - progress * 1.5; // First dip
+                                else if (progress < 0.5) buyMult = 0.55 + (progress - 0.3) * 1.5; // Recovery
+                                else if (progress < 0.7) buyMult = 0.85 - (progress - 0.5) * 1.5; // Second dip
+                                else buyMult = 0.55 + (progress - 0.7) * 2.0; // Breakout
+                                break;
+                            case 'DOUBLE_TOP':
+                                if (progress < 0.3) buyMult = 0.6 + progress * 1.5; // First peak
+                                else if (progress < 0.5) buyMult = 1.05 - (progress - 0.3) * 1.5; // Pullback
+                                else if (progress < 0.7) buyMult = 0.75 + (progress - 0.5) * 1.5; // Second peak
+                                else buyMult = 1.05 - (progress - 0.7) * 1.5; // Breakdown
+                                break;
+                            case 'WEDGE_RISING':
+                                buyMult = 0.8 + progress * 0.6 - Math.pow(progress, 2) * 0.4; // Rising but converging
+                                break;
+                            case 'WEDGE_FALLING':
+                                buyMult = 1.2 - progress * 0.6 + Math.pow(progress, 2) * 0.4; // Falling but converging
+                                break;
+                            case 'SIDEWAYS':
+                                buyMult = 0.9 + Math.sin(progress * Math.PI * 4) * 0.2; // Oscillate
+                                break;
+                            case 'BREAKOUT':
+                            default:
+                                buyMult = progress < 0.7 ? 0.6 : 1.8; // Consolidate then breakout
+                                break;
+                        }
+                        
+                        // Apply multiplier to buy range
+                        const baseAmount = strategy.config.minBuyAmount + 
+                            (strategy.config.maxBuyAmount - strategy.config.minBuyAmount) * buyMult * 0.7;
+                        
+                        // Add jitter for natural behavior
+                        const jitter = strategy.config.jitterPercentage || 20;
+                        const jitterMultiplier = 0.85 + Math.random() * 0.3;
+                        amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+                    } else {
+                        // Standard randomized buy amount for other strategies
+                        const baseAmount = getRandomFloat(
+                            strategy.config.minBuyAmount,
+                            strategy.config.maxBuyAmount
+                        );
+                        const jitter = strategy.config.jitterPercentage || 20;
+                        const jitterMultiplier = 1 + (getRandomFloat(-jitter, jitter) / 100);
+                        amount = parseFloat((baseAmount * jitterMultiplier).toFixed(6));
+                    }
                     
                     // Add random delay for more organic behavior (0-2 seconds)
                     const randomDelay = Math.floor(Math.random() * 2000);
@@ -4115,6 +4253,139 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                             strategy.id,
                             wallet.publicKey.toBase58(),
                             amount,
+                            0,
+                            false
+                        );
+                    }
+                    return null;
+                },
+                strategy.config.batchConcurrency || 10,
+                null,
+                () => strategy.status === 'RUNNING'
+            );
+            
+            // Execute sells with batch engine (after buys complete)
+            logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Starting sells...`);
+            
+            await BatchSwapEngine.executeBatch(
+                cycleWallets,
+                async (wallet) => {
+                    if (strategy.status !== 'RUNNING') return null;
+                    
+                    // Add random delay before sell (0-2 seconds)
+                    const randomDelay = Math.floor(Math.random() * 2000);
+                    if (randomDelay > 0) {
+                        await sleep(randomDelay);
+                    }
+                    
+                    try {
+                        const tokenBalance = await getTokenBalance(
+                            connection,
+                            wallet.publicKey,
+                            strategy.config.tokenAddress
+                        );
+                        
+                        if (tokenBalance <= 0) {
+                            return null; // No tokens to sell
+                        }
+                        
+                        let sellAmount = tokenBalance;
+                        
+                        // Apply chart pattern sell logic if this is a CHART_PATTERN strategy
+                        if (strategy.type === 'CHART_PATTERN') {
+                            const progress = cycle / Math.max(strategy.config.numberOfCycles - 1, 1);
+                            const pattern = strategy.config.chartPattern || 'ASCENDING_TRIANGLE';
+                            let sellFrac = 0.85; // Default: sell most tokens
+                            
+                            switch (pattern) {
+                                case 'ASCENDING_TRIANGLE':
+                                case 'ASCENDING':
+                                    sellFrac = 0.3 + (1 - progress) * 0.4; // Sell less as price rises
+                                    break;
+                                case 'DESCENDING_TRIANGLE':
+                                case 'DESCENDING':
+                                    sellFrac = 0.3 + progress * 0.6; // Sell more as price falls
+                                    break;
+                                case 'BULL_FLAG':
+                                    sellFrac = progress < 0.3 ? 0.4 : 0.85; // Hold during consolidation
+                                    break;
+                                case 'BEAR_FLAG':
+                                    sellFrac = progress < 0.3 ? 0.9 : 0.5; // Sell during weakness
+                                    break;
+                                case 'CUP_AND_HANDLE':
+                                case 'CUP_HANDLE':
+                                    sellFrac = progress > 0.8 ? 0.3 : 0.85; // Hold during handle formation
+                                    break;
+                                case 'HEAD_AND_SHOULDERS':
+                                    if (progress < 0.5) sellFrac = 0.4; // Hold during formation
+                                    else if (progress < 0.75) sellFrac = 0.6; // Start selling
+                                    else sellFrac = 0.9; // Sell heavily on breakdown
+                                    break;
+                                case 'DOUBLE_BOTTOM':
+                                    if (progress < 0.7) sellFrac = 0.85; // Sell during dips
+                                    else sellFrac = 0.3; // Hold during breakout
+                                    break;
+                                case 'DOUBLE_TOP':
+                                    if (progress < 0.7) sellFrac = 0.4; // Hold during peaks
+                                    else sellFrac = 0.9; // Sell on breakdown
+                                    break;
+                                case 'WEDGE_RISING':
+                                    sellFrac = 0.5 + progress * 0.3; // Gradually sell more
+                                    break;
+                                case 'WEDGE_FALLING':
+                                    sellFrac = 0.8 - progress * 0.3; // Gradually sell less
+                                    break;
+                                case 'SIDEWAYS':
+                                    sellFrac = 0.85; // Consistent selling
+                                    break;
+                                case 'BREAKOUT':
+                                default:
+                                    sellFrac = progress < 0.7 ? 0.9 : 0.2; // Sell during consolidation, hold on breakout
+                                    break;
+                            }
+                            
+                            sellAmount = parseFloat((tokenBalance * sellFrac).toFixed(6));
+                        }
+                        
+                        // Ensure we have something to sell
+                        if (sellAmount <= 0) {
+                            return null;
+                        }
+                        
+                        const solBefore = await connection.getBalance(wallet.publicKey);
+                        
+                        const txid = await swap(
+                            strategy.config.tokenAddress,
+                            SOL_ADDR,
+                            wallet,
+                            connection,
+                            sellAmount,
+                            chatId,
+                            true
+                        );
+                        
+                        if (txid) {
+                            await sleep(1000);
+                            const solAfter = await connection.getBalance(wallet.publicKey);
+                            const solReceived = (solAfter - solBefore) / 1e9;
+                            
+                            multiStrategyManager.recordSell(
+                                strategy.id,
+                                wallet.publicKey.toBase58(),
+                                sellAmount,
+                                solReceived,
+                                true
+                            );
+                            
+                            logger.info(`[MultiStrategy] ${strategy.name} - Sell success: ${sellAmount} tokens -> ${solReceived.toFixed(6)} SOL`);
+                            return txid;
+                        }
+                    } catch (error) {
+                        logger.error(`[MultiStrategy] ${strategy.name} - Sell failed: ${error.message}`);
+                        multiStrategyManager.recordSell(
+                            strategy.id,
+                            wallet.publicKey.toBase58(),
+                            0,
                             0,
                             false
                         );
