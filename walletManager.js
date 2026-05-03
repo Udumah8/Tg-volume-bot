@@ -517,9 +517,11 @@ export class WalletPool {
      * @param {boolean} useWebFunding - Enable multi-hop funding
      * @param {number} stealthLevel - 1=direct, 2=multi-hop
      * @param {number} hopDepth - Number of intermediate hops (1-5)
+     * @param {boolean} randomizeAmounts - Enable per-wallet randomization
+     * @param {number} fundingVariance - Variance percentage (e.g., 0.25 = ±25%)
      * @returns {Promise<{completed, successes, failures, skipped}>}
      */
-    async fundAll(connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2) {
+    async fundAll(connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2, randomizeAmounts = false, fundingVariance = 0.25) {
         if (!this.wallets.length) {
             console.warn('[WalletPool] fundAll called with empty pool');
             return { completed: 0, successes: 0, failures: 0, skipped: 0 };
@@ -593,9 +595,11 @@ export class WalletPool {
      * 
      * @param {Keypair[]} wallets - Array of wallets to fund
      * @param {Object} options - Funding options
+     * @param {boolean} options.randomizeAmounts - Enable per-wallet randomization
+     * @param {number} options.fundingVariance - Variance percentage (e.g., 0.25 = ±25%)
      * @returns {Promise<{completed, successes, failures, skipped}>}
      */
-    async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2 }) {
+    async fundWallets(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, concurrency = 10, progressCb = null, checkRunning = null, useWebFunding = false, stealthLevel = 1, hopDepth = 2, randomizeAmounts = false, fundingVariance = 0.25 }) {
         if (!wallets || !wallets.length) {
             console.warn('[WalletPool] fundWallets called with empty array');
             return { completed: 0, successes: 0, failures: 0, skipped: 0 };
@@ -650,15 +654,29 @@ export class WalletPool {
                 progressCb,
                 checkRunning,
                 hopDepth,
-                skipped
+                skipped,
+                randomizeAmounts,
+                fundingVariance
             });
+        }
+
+        // Log randomization status
+        if (randomizeAmounts) {
+            console.log(`[WalletPool] 💰 Per-wallet randomization enabled: ±${(fundingVariance * 100).toFixed(0)}% variance`);
         }
 
         // Direct funding (default)
         const result = await this._batchExecute(
             walletsToFund,
             async (wallet) => {
-                await sendSOLFn(connection, masterKeypair, wallet.publicKey, amountSOL);
+                // Apply per-wallet randomization if enabled
+                let fundAmount = amountSOL;
+                if (randomizeAmounts && fundingVariance > 0) {
+                    const minAmount = amountSOL * (1 - fundingVariance);
+                    const maxAmount = amountSOL * (1 + fundingVariance);
+                    fundAmount = parseFloat((minAmount + Math.random() * (maxAmount - minAmount)).toFixed(6));
+                }
+                await sendSOLFn(connection, masterKeypair, wallet.publicKey, fundAmount);
             },
             concurrency,
             progressCb,
@@ -673,7 +691,7 @@ export class WalletPool {
      * Creates intermediate wallets to break direct on-chain link
      * @private
      */
-    async _fundWithMultiHop(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, progressCb, checkRunning, hopDepth, skipped }) {
+    async _fundWithMultiHop(wallets, { connection, masterKeypair, sendSOLFn, amountSOL, progressCb, checkRunning, hopDepth, skipped, randomizeAmounts = false, fundingVariance = 0.25 }) {
         const results = { completed: 0, successes: 0, failures: 0, skipped };
         
         for (const targetWallet of wallets) {
@@ -683,6 +701,14 @@ export class WalletPool {
             }
 
             try {
+                // Apply per-wallet randomization if enabled
+                let targetAmount = amountSOL;
+                if (randomizeAmounts && fundingVariance > 0) {
+                    const minAmount = amountSOL * (1 - fundingVariance);
+                    const maxAmount = amountSOL * (1 + fundingVariance);
+                    targetAmount = parseFloat((minAmount + Math.random() * (maxAmount - minAmount)).toFixed(6));
+                }
+
                 // Generate intermediate hop wallets
                 const hopWallets = [];
                 for (let i = 0; i < hopDepth; i++) {
@@ -692,7 +718,7 @@ export class WalletPool {
                 // Calculate amounts with fees
                 // Each hop needs: target amount + fees for next hop
                 const feePerHop = 0.000005; // Solana base fee
-                let currentAmount = amountSOL;
+                let currentAmount = targetAmount;
                 const hopAmounts = [];
                 
                 // Work backwards from target to calculate each hop amount
@@ -722,10 +748,11 @@ export class WalletPool {
 
                 // Step 3: Final hop to target wallet
                 const lastHopWallet = hopWallets[hopDepth - 1];
-                await sendSOLFn(connection, lastHopWallet, targetWallet.publicKey, amountSOL);
+                await sendSOLFn(connection, lastHopWallet, targetWallet.publicKey, targetAmount);
 
                 results.successes++;
-                console.log(`[WalletPool] ✅ Multi-hop funded: ${targetWallet.publicKey.toBase58().substring(0, 8)}... via ${hopDepth} hops`);
+                const amountStr = randomizeAmounts ? `${targetAmount.toFixed(6)}` : `${amountSOL.toFixed(6)}`;
+                console.log(`[WalletPool] ✅ Multi-hop funded: ${targetWallet.publicKey.toBase58().substring(0, 8)}... with ${amountStr} SOL via ${hopDepth} hops`);
 
             } catch (error) {
                 results.failures++;

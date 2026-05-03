@@ -873,33 +873,41 @@ async function executeStrategyTemplate(chatId, connection, strategyConfig) {
 
         let fundResult;
         if (isEphemeral) {
-            // Use randomized funding amount for natural behavior
-            const randomizedFundAmount = getRandomizedFundAmount(fundAmount, 0.25);
-            
+            // Use randomized funding with per-wallet variance for natural behavior
             fundResult = await walletManager.fundWallets(wallets, {
-                connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: randomizedFundAmount, concurrency: STATE.batchConcurrency,
+                connection, 
+                masterKeypair, 
+                sendSOLFn: sendSOL, 
+                amountSOL: fundAmount, 
+                concurrency: STATE.batchConcurrency,
                 progressCb: (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 checkRunning: () => STATE.running && !isShuttingDown,
                 useWebFunding: STATE.useWebFunding,
                 stealthLevel: STATE.fundingStealthLevel,
-                hopDepth: STATE.makerFundingChainDepth
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,  // Enable per-wallet randomization
+                fundingVariance: 0.25    // ±25% variance per wallet
             });
             
-            logger.info(`[Strategy] Funded wallets with randomized amount: ${randomizedFundAmount.toFixed(6)} SOL`);
+            logger.info(`[Strategy] Funded ${fundResult.successes} wallets with per-wallet randomization (±25% variance)`);
         } else {
-            // Wallet Pool Mode: Also use randomized funding for natural behavior
-            const randomizedFundAmount = getRandomizedFundAmount(fundAmount, 0.25);
-            
+            // Wallet Pool Mode: Use randomized funding with per-wallet variance
             fundResult = await walletManager.fundAll(
-                connection, masterKeypair, sendSOL, randomizedFundAmount, STATE.batchConcurrency,
+                connection, 
+                masterKeypair, 
+                sendSOL, 
+                fundAmount, 
+                STATE.batchConcurrency,
                 (prog) => bot.sendMessage(chatId, formatProgressMessage('💰 Funding', prog.successes, prog.total), { parse_mode: 'Markdown' }).catch(() => { }),
                 () => STATE.running && !isShuttingDown,
                 STATE.useWebFunding,
                 STATE.fundingStealthLevel,
-                STATE.makerFundingChainDepth
+                STATE.makerFundingChainDepth,
+                true,   // randomizeAmounts
+                0.25    // fundingVariance (±25%)
             );
             
-            logger.info(`[Strategy] Funded pool wallets with randomized amount: ${randomizedFundAmount.toFixed(6)} SOL`);
+            logger.info(`[Strategy] Funded ${fundResult.successes} pool wallets with per-wallet randomization (±25% variance)`);
         }
 
         if (fundResult.failures > 0) {
@@ -1420,7 +1428,17 @@ async function executeTrendingStrategy(chatId, connection) {
         const cycles = Math.floor(5 + intensity * 2);
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(walletCount) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { 
+                connection, masterKeypair, sendSOLFn: sendSOL, 
+                amountSOL: STATE.fundAmountPerWallet * 2, 
+                concurrency: STATE.batchConcurrency, 
+                checkRunning: () => STATE.running && !isShuttingDown, 
+                useWebFunding: STATE.useWebFunding, 
+                stealthLevel: STATE.fundingStealthLevel, 
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,
+                fundingVariance: 0.25
+            });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Viral Pump funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1462,7 +1480,17 @@ async function executeTrendingStrategy(chatId, connection) {
         const poolSize = Math.max(1, Math.floor(walletCount * 0.2));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(poolSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { 
+                connection, masterKeypair, sendSOLFn: sendSOL, 
+                amountSOL: STATE.fundAmountPerWallet * 2, 
+                concurrency: STATE.batchConcurrency, 
+                checkRunning: () => STATE.running && !isShuttingDown, 
+                useWebFunding: STATE.useWebFunding, 
+                stealthLevel: STATE.fundingStealthLevel, 
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,
+                fundingVariance: 0.25
+            });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Organic Growth funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1506,7 +1534,17 @@ async function executeTrendingStrategy(chatId, connection) {
         const surgeSize = Math.max(1, Math.floor(walletCount * 0.4));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(surgeSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { 
+                connection, masterKeypair, sendSOLFn: sendSOL, 
+                amountSOL: STATE.fundAmountPerWallet * 3, 
+                concurrency: STATE.batchConcurrency, 
+                checkRunning: () => STATE.running && !isShuttingDown, 
+                useWebFunding: STATE.useWebFunding, 
+                stealthLevel: STATE.fundingStealthLevel, 
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,
+                fundingVariance: 0.25
+            });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* FOMO Wave funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1543,7 +1581,17 @@ async function executeTrendingStrategy(chatId, connection) {
         const ladderSize = Math.max(1, Math.floor(walletCount * 0.3));
         const ephemWallets = !STATE.useWalletPool ? fetchWallets(ladderSize) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+            const fundResult = await walletManager.fundWallets(ephemWallets, { 
+                connection, masterKeypair, sendSOLFn: sendSOL, 
+                amountSOL: STATE.fundAmountPerWallet * 2, 
+                concurrency: STATE.batchConcurrency, 
+                checkRunning: () => STATE.running && !isShuttingDown, 
+                useWebFunding: STATE.useWebFunding, 
+                stealthLevel: STATE.fundingStealthLevel, 
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,
+                fundingVariance: 0.25
+            });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Liquidity Ladder funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1572,7 +1620,17 @@ async function executeTrendingStrategy(chatId, connection) {
 
         const ephemBuyers = !STATE.useWalletPool ? fetchWallets(1) : [];
         if (!STATE.useWalletPool) {
-            const fundResult = await walletManager.fundWallets(ephemBuyers, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+            const fundResult = await walletManager.fundWallets(ephemBuyers, { 
+                connection, masterKeypair, sendSOLFn: sendSOL, 
+                amountSOL: STATE.fundAmountPerWallet * 2, 
+                concurrency: STATE.batchConcurrency, 
+                checkRunning: () => STATE.running && !isShuttingDown, 
+                useWebFunding: STATE.useWebFunding, 
+                stealthLevel: STATE.fundingStealthLevel, 
+                hopDepth: STATE.makerFundingChainDepth,
+                randomizeAmounts: true,
+                fundingVariance: 0.25
+            });
             if (fundResult.successes === 0) {
                 bot.sendMessage(chatId, `❌ *ABORTED:* Wash Trading funding failed.`, { parse_mode: 'Markdown' });
                 return { success: false, error: 'Funding failed' };
@@ -1646,7 +1704,17 @@ async function executeKolAlphaCall(chatId, connection) {
     const whaleAmt = parseFloat((getRandomFloat(STATE.maxBuyAmount * 2, STATE.maxBuyAmount * 5)).toFixed(4));
     
     if (!STATE.useWalletPool) {
-        await walletManager.fundWallets([whaleWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: whaleAmt + 0.02, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+        await walletManager.fundWallets([whaleWallet], { 
+            connection, masterKeypair, sendSOLFn: sendSOL, 
+            amountSOL: whaleAmt + 0.02, 
+            concurrency: STATE.batchConcurrency, 
+            checkRunning: () => STATE.running && !isShuttingDown, 
+            useWebFunding: STATE.useWebFunding, 
+            stealthLevel: STATE.fundingStealthLevel, 
+            hopDepth: STATE.makerFundingChainDepth,
+            randomizeAmounts: true,
+            fundingVariance: 0.25
+        });
     }
 
     bot.sendMessage(chatId, `🐋 Whale buy: \`${whaleAmt}\` SOL`, { parse_mode: 'Markdown' });
@@ -1657,7 +1725,17 @@ async function executeKolAlphaCall(chatId, connection) {
     if (!validateWallets(swarmWallets, chatId, 'KOL Swarm')) return;
     if (!STATE.useWalletPool) {
         bot.sendMessage(chatId, `🐟 Funding ${swarmSize} retail wallets...`, { parse_mode: 'Markdown' });
-        await walletManager.fundWallets(swarmWallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.minBuyAmount + 0.005, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+        await walletManager.fundWallets(swarmWallets, { 
+            connection, masterKeypair, sendSOLFn: sendSOL, 
+            amountSOL: STATE.minBuyAmount + 0.005, 
+            concurrency: STATE.batchConcurrency, 
+            checkRunning: () => STATE.running && !isShuttingDown, 
+            useWebFunding: STATE.useWebFunding, 
+            stealthLevel: STATE.fundingStealthLevel, 
+            hopDepth: STATE.makerFundingChainDepth,
+            randomizeAmounts: true,
+            fundingVariance: 0.25
+        });
     }
     bot.sendMessage(chatId, `🚀 Retail FOMO: ${swarmWallets.length} wallets`, { parse_mode: 'Markdown' });
     await BatchSwapEngine.executeBatch(
@@ -1687,7 +1765,17 @@ async function executeBullTrap(chatId, connection) {
     const trapArr = fetchWallets(1);
     if (!validateWallets(trapArr, chatId, 'Bull Trap')) return;
     const trapWallet = trapArr[0];
-    if (!STATE.useWalletPool) await walletManager.fundWallets([trapWallet], { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet + 0.01, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
+    if (!STATE.useWalletPool) await walletManager.fundWallets([trapWallet], { 
+        connection, masterKeypair, sendSOLFn: sendSOL, 
+        amountSOL: STATE.fundAmountPerWallet + 0.01, 
+        concurrency: STATE.batchConcurrency, 
+        checkRunning: () => STATE.running && !isShuttingDown, 
+        useWebFunding: STATE.useWebFunding, 
+        stealthLevel: STATE.fundingStealthLevel, 
+        hopDepth: STATE.makerFundingChainDepth,
+        randomizeAmounts: true,
+        fundingVariance: 0.25
+    });
 
     const steps = Math.floor(getRandomFloat(4, 7));
     for (let i = 0; i < steps && STATE.running && !isShuttingDown; i++) {
@@ -1766,8 +1854,29 @@ async function executeSniperStrategy(chatId, connection) {
     
     if (!validateWallets(wallets, chatId, 'Sniper')) return;
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { 
+        connection, masterKeypair, sendSOLFn: sendSOL, 
+        amountSOL: STATE.fundAmountPerWallet * 2, 
+        concurrency: STATE.batchConcurrency, 
+        checkRunning: () => STATE.running && !isShuttingDown, 
+        useWebFunding: STATE.useWebFunding, 
+        stealthLevel: STATE.fundingStealthLevel, 
+        hopDepth: STATE.makerFundingChainDepth,
+        randomizeAmounts: true,
+        fundingVariance: 0.25
+    });
+    else await walletManager.fundAll(
+        connection, masterKeypair, sendSOL, 
+        STATE.fundAmountPerWallet * 2, 
+        STATE.batchConcurrency, 
+        null, 
+        () => STATE.running && !isShuttingDown, 
+        STATE.useWebFunding, 
+        STATE.fundingStealthLevel, 
+        STATE.makerFundingChainDepth,
+        true,
+        0.25
+    );
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -1796,8 +1905,29 @@ async function executeAdvWashStrategy(chatId, connection) {
     if (!validateWallets(wallets, chatId, 'Advanced Wash')) return;
     const groupSize = Math.floor(wallets.length / STATE.washGroupCount);
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { 
+        connection, masterKeypair, sendSOLFn: sendSOL, 
+        amountSOL: STATE.fundAmountPerWallet, 
+        concurrency: STATE.batchConcurrency, 
+        checkRunning: () => STATE.running && !isShuttingDown, 
+        useWebFunding: STATE.useWebFunding, 
+        stealthLevel: STATE.fundingStealthLevel, 
+        hopDepth: STATE.makerFundingChainDepth,
+        randomizeAmounts: true,
+        fundingVariance: 0.25
+    });
+    else await walletManager.fundAll(
+        connection, masterKeypair, sendSOL, 
+        STATE.fundAmountPerWallet, 
+        STATE.batchConcurrency, 
+        null, 
+        () => STATE.running && !isShuttingDown, 
+        STATE.useWebFunding, 
+        STATE.fundingStealthLevel, 
+        STATE.makerFundingChainDepth,
+        true,
+        0.25
+    );
 
     for (let c = 0; c < STATE.washCyclesPerGroup && STATE.running; c++) {
         for (let g = 0; g < STATE.washGroupCount; g++) {
@@ -1822,8 +1952,29 @@ async function executeMirrorWhaleStrategy(chatId, connection) {
     const wallets = fetchWallets(STATE.walletsPerCycle);
     if (!validateWallets(wallets, chatId, 'Mirror Whale')) return;
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 3, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 3, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { 
+        connection, masterKeypair, sendSOLFn: sendSOL, 
+        amountSOL: STATE.fundAmountPerWallet * 3, 
+        concurrency: STATE.batchConcurrency, 
+        checkRunning: () => STATE.running && !isShuttingDown, 
+        useWebFunding: STATE.useWebFunding, 
+        stealthLevel: STATE.fundingStealthLevel, 
+        hopDepth: STATE.makerFundingChainDepth,
+        randomizeAmounts: true,
+        fundingVariance: 0.25
+    });
+    else await walletManager.fundAll(
+        connection, masterKeypair, sendSOL, 
+        STATE.fundAmountPerWallet * 3, 
+        STATE.batchConcurrency, 
+        null, 
+        () => STATE.running && !isShuttingDown, 
+        STATE.useWebFunding, 
+        STATE.fundingStealthLevel, 
+        STATE.makerFundingChainDepth,
+        true,
+        0.25
+    );
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -1851,8 +2002,29 @@ async function executeCurvePumpStrategy(chatId, connection) {
     const wallets = fetchWallets(STATE.walletsPerCycle);
     if (!validateWallets(wallets, chatId, 'Curve Pump')) return;
 
-    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { connection, masterKeypair, sendSOLFn: sendSOL, amountSOL: STATE.fundAmountPerWallet * 2, concurrency: STATE.batchConcurrency, checkRunning: () => STATE.running && !isShuttingDown, useWebFunding: STATE.useWebFunding, stealthLevel: STATE.fundingStealthLevel, hopDepth: STATE.makerFundingChainDepth });
-    else await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet * 2, STATE.batchConcurrency, null, () => STATE.running && !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+    if (!STATE.useWalletPool) await walletManager.fundWallets(wallets, { 
+        connection, masterKeypair, sendSOLFn: sendSOL, 
+        amountSOL: STATE.fundAmountPerWallet * 2, 
+        concurrency: STATE.batchConcurrency, 
+        checkRunning: () => STATE.running && !isShuttingDown, 
+        useWebFunding: STATE.useWebFunding, 
+        stealthLevel: STATE.fundingStealthLevel, 
+        hopDepth: STATE.makerFundingChainDepth,
+        randomizeAmounts: true,
+        fundingVariance: 0.25
+    });
+    else await walletManager.fundAll(
+        connection, masterKeypair, sendSOL, 
+        STATE.fundAmountPerWallet * 2, 
+        STATE.batchConcurrency, 
+        null, 
+        () => STATE.running && !isShuttingDown, 
+        STATE.useWebFunding, 
+        STATE.fundingStealthLevel, 
+        STATE.makerFundingChainDepth,
+        true,
+        0.25
+    );
 
     await BatchSwapEngine.executeBatch(wallets, async (wallet, idx) => {
         if (!STATE.running || isShuttingDown) return null;
@@ -4090,20 +4262,21 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                 
                 const fundingConcurrency = Math.min(strategy.config.batchConcurrency || 3, 3);
                 
-                // Use randomized funding amount for natural behavior (±25% variance)
+                // Use per-wallet randomized funding for natural behavior (±25% variance per wallet)
                 const baseFundAmount = strategy.config.fundAmountPerWallet || 0.005;
-                const randomizedFundAmount = getRandomizedFundAmount(baseFundAmount, 0.25);
                 
                 const fundResult = await walletManager.fundWallets(cycleWallets, {
                     connection,
                     masterKeypair,
                     sendSOLFn: sendSOL,
-                    amountSOL: randomizedFundAmount,
+                    amountSOL: baseFundAmount,
                     concurrency: fundingConcurrency,
                     checkRunning: () => strategy.status === 'RUNNING',
                     useWebFunding: strategy.config.useWebFunding || false,
                     stealthLevel: strategy.config.fundingStealthLevel || 0,
-                    hopDepth: strategy.config.fundingStealthLevel || 0
+                    hopDepth: strategy.config.fundingStealthLevel || 0,
+                    randomizeAmounts: true,  // Enable per-wallet randomization
+                    fundingVariance: 0.25    // ±25% variance per wallet
                 });
                 
                 if (!fundResult || !fundResult.success) {
@@ -4111,9 +4284,7 @@ async function executeMultiStrategyInstance(strategy, chatId) {
                     continue;
                 }
                 
-                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.funded} wallets with ${randomizedFundAmount.toFixed(6)} SOL each`);
-                
-                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.funded} wallets`);
+                logger.info(`[MultiStrategy] ${strategy.name} - Cycle ${cycle + 1}: Funded ${fundResult.successes} wallets with per-wallet randomization (±25% variance)`);
             }
             
             // Execute buys with batch engine
@@ -5568,9 +5739,20 @@ bot.on('callback_query', async (callbackQuery) => {
             if (val.toUpperCase() !== 'YES') return bot.sendMessage(chatId, `❌ Cancelled.`);
             try {
                 await withRpcFallback(async (connection) => {
-                    bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets...`);
+                    bot.sendMessage(chatId, `💰 Funding ${walletManager.size} wallets with per-wallet randomization (±25% variance)...`);
                     // Manual funding should only check for shutdown, not if a strategy is "running"
-                    const result = await walletManager.fundAll(connection, masterKeypair, sendSOL, STATE.fundAmountPerWallet, STATE.batchConcurrency, null, () => !isShuttingDown, STATE.useWebFunding, STATE.fundingStealthLevel, STATE.makerFundingChainDepth);
+                    const result = await walletManager.fundAll(
+                        connection, masterKeypair, sendSOL, 
+                        STATE.fundAmountPerWallet, 
+                        STATE.batchConcurrency, 
+                        null, 
+                        () => !isShuttingDown, 
+                        STATE.useWebFunding, 
+                        STATE.fundingStealthLevel, 
+                        STATE.makerFundingChainDepth,
+                        true,   // randomizeAmounts
+                        0.25    // fundingVariance (±25%)
+                    );
                     bot.sendMessage(chatId, `✅ Funding complete. ${result.successes} succeeded, ${result.failures} failed.`);
                     showWalletPoolMenu(chatId);
                 });
